@@ -987,21 +987,29 @@ def schedule_credits_backfill_on_movie_play(sender, instance, **kwargs):
 
 @receiver([post_save, post_delete], sender=Music)
 def refresh_history_cache_on_music_change(sender, instance, **kwargs):
-    """Schedule history cache refresh when music activity changes.
-
-    We schedule a refresh but don't delete the cache immediately,
-    so users can see the old data with a notification while refresh happens.
-    """
+    """Schedule history cache refresh after the music write commits."""
     if kwargs.get("raw"):
         return
+    if (
+        media_cache_change_signals_suppressed()
+        or media_change_side_effects_suppressed()
+    ):
+        return
+
     user_id = getattr(instance, "user_id", None)
     day_key = history_cache.history_day_key(getattr(instance, "end_date", None))
-    _handle_media_cache_change(
-        user_id,
-        MediaTypes.MUSIC.value,
-        reason="music_change",
-        history_specs=[([day_key] if day_key else [], ("sessions", "repeats"))],
-        statistics_day_values=[day_key] if day_key else [],
+
+    transaction.on_commit(
+        lambda user_id=user_id, day_key=day_key: _handle_media_cache_change(
+            user_id,
+            MediaTypes.MUSIC.value,
+            reason="music_change",
+            history_specs=[
+                ([day_key] if day_key else [], ("sessions", "repeats"))
+            ],
+            statistics_day_values=[day_key] if day_key else [],
+        ),
+        using=kwargs.get("using"),
     )
 
 

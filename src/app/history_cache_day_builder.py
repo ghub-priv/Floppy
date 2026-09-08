@@ -263,13 +263,33 @@ def build_history_day(user, day_key, logging_style_override=None, media_types=No
             ).values("id", "end_date", "album_id", "track_id")
         )
     if music_history:
-        album_ids = {
-            record["album_id"] for record in music_history if record["album_id"]
-        }
-        track_ids = {
-            record["track_id"] for record in music_history if record["track_id"]
-        }
         music_ids = {record["id"] for record in music_history if record["id"]}
+
+        music_map = (
+            {
+                music.id: music
+                for music in Music.objects.filter(
+                    id__in=music_ids, user=user
+                ).select_related("item", "album", "album__artist", "track")
+            }
+            if music_ids
+            else {}
+        )
+
+        # Prefer current Music relations over stale HistoricalMusic snapshots.
+        album_ids = {
+            music.album_id for music in music_map.values() if music.album_id
+        }
+        album_ids.update(
+            record["album_id"] for record in music_history if record["album_id"]
+        )
+
+        track_ids = {
+            music.track_id for music in music_map.values() if music.track_id
+        }
+        track_ids.update(
+            record["track_id"] for record in music_history if record["track_id"]
+        )
 
         album_map = (
             {
@@ -284,16 +304,6 @@ def build_history_day(user, day_key, logging_style_override=None, media_types=No
         track_map = (
             {track.id: track for track in Track.objects.filter(id__in=track_ids)}
             if track_ids
-            else {}
-        )
-        music_map = (
-            {
-                music.id: music
-                for music in Music.objects.filter(
-                    id__in=music_ids, user=user
-                ).select_related("item", "album", "track")
-            }
-            if music_ids
             else {}
         )
 
@@ -328,11 +338,20 @@ def build_history_day(user, day_key, logging_style_override=None, media_types=No
             played_at_local = _localize_datetime(record["end_date"])
             if not played_at_local:
                 continue
-            album_id = record["album_id"]
-            track_id = record["track_id"]
+            music_entry = music_map.get(record["id"])
+
+            album_id = (
+                music_entry.album_id
+                if music_entry and music_entry.album_id
+                else record["album_id"]
+            )
+            track_id = (
+                music_entry.track_id
+                if music_entry and music_entry.track_id
+                else record["track_id"]
+            )
             runtime_minutes = 0
 
-            music_entry = music_map.get(record["id"])
             if music_entry:
                 runtime_minutes = _get_music_runtime_minutes(
                     music_entry, track_duration_cache
@@ -437,7 +456,6 @@ def build_history_day(user, day_key, logging_style_override=None, media_types=No
                 user=user,
             ).select_related("item", "episode", "episode__show", "show")
         }
-
         podcast_play_counts = {}
         if podcast_ids:
             counts_by_id = {
