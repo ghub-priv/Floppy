@@ -93,7 +93,11 @@ def _lookup_watch(user, watch_key: str):
                 "related_season__related_tv",
                 "related_season__related_tv__item",
             )
-            .filter(pk=instance_id, related_season__user=user)
+            .filter(
+                pk=instance_id,
+                related_season__user=user,
+                item__isnull=False,
+            )
             .first()
         )
     return kind, watch
@@ -407,6 +411,39 @@ def _episode_card(episode: Episode) -> dict[str, Any]:
     }
 
 
+def _latest_unique_movie_plays(plays: list[MoviePlay]) -> list[MoviePlay]:
+    """Keep only the newest candidate play for each movie."""
+    plays.sort(
+        key=lambda play: _watch_datetime(play.end_date, play.created_at),
+        reverse=True,
+    )
+    seen_movie_ids = set()
+    unique = []
+    for play in plays:
+        if play.movie_id in seen_movie_ids:
+            continue
+        seen_movie_ids.add(play.movie_id)
+        unique.append(play)
+    return unique
+
+
+def _latest_unique_episode_plays(episodes: list[Episode]) -> list[Episode]:
+    """Keep only the newest candidate play for each tracked episode."""
+    episodes.sort(
+        key=lambda episode: _watch_datetime(episode.end_date, episode.created_at),
+        reverse=True,
+    )
+    seen_episode_ids = set()
+    unique = []
+    for episode in episodes:
+        identity = (episode.related_season_id, episode.item_id)
+        if identity in seen_episode_ids:
+            continue
+        seen_episode_ids.add(identity)
+        unique.append(episode)
+    return unique
+
+
 def build_post_watch_cards(user):
     """Build the derived seven-day inbox of recently watched unrated items."""
     cutoff = timezone.now() - timedelta(days=POST_WATCH_LOOKBACK_DAYS)
@@ -415,30 +452,32 @@ def build_post_watch_cards(user):
         created_at__gte=cutoff,
     )
 
-    movie_plays = list(
-        MoviePlay.objects.filter(
-            recent,
-            movie__user=user,
-            movie__score__isnull=True,
+    movie_plays = _latest_unique_movie_plays(
+        list(
+            MoviePlay.objects.filter(
+                recent,
+                movie__user=user,
+                movie__score__isnull=True,
+            ).select_related("movie", "movie__item", "movie__user")
         )
-        .select_related("movie", "movie__item", "movie__user")
-        .order_by("-end_date", "-created_at")[:POST_WATCH_MAX_CARDS]
-    )
-    episodes = list(
-        Episode.objects.filter(
-            recent,
-            related_season__user=user,
-            score__isnull=True,
+    )[:POST_WATCH_MAX_CARDS]
+    episodes = _latest_unique_episode_plays(
+        list(
+            Episode.objects.filter(
+                recent,
+                related_season__user=user,
+                item__isnull=False,
+                dropped=False,
+                score__isnull=True,
+            ).select_related(
+                "item",
+                "related_season",
+                "related_season__item",
+                "related_season__related_tv",
+                "related_season__related_tv__item",
+            )
         )
-        .select_related(
-            "item",
-            "related_season",
-            "related_season__item",
-            "related_season__related_tv",
-            "related_season__related_tv__item",
-        )
-        .order_by("-end_date", "-created_at")[:POST_WATCH_MAX_CARDS]
-    )
+    )[:POST_WATCH_MAX_CARDS]
 
     candidate_keys = [
         *(_watch_key("movie", play.id) for play in movie_plays),
