@@ -242,13 +242,14 @@ def _recover_cold_state(user) -> bool:
             media_type,
             media_id,
         )
-        return True
     except KodiError as exc:
         logger.debug("Kodi cold recovery unavailable for user=%s: %s", user.id, exc)
         return False
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("Kodi cold recovery received unexpected data: %s", exc)
         return False
+    else:
+        return True
 
 
 def reconcile_for_user(user) -> bool:
@@ -328,10 +329,11 @@ def reconcile_for_user(user) -> bool:
             event_type,
             offset_seconds,
         )
-        return True
     except KodiError as exc:
         logger.debug("Kodi reconciliation unavailable for user=%s: %s", user.id, exc)
         return False
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("Kodi reconciliation received unexpected player data: %s", exc)
         return False
+    else:
+        return True
