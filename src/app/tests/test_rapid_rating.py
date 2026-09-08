@@ -26,6 +26,7 @@ def test_safe_int_rejects_invalid_filter_values():
 
 
 def test_show_aggregate_excludes_specials(monkeypatch):
+    user = _user()
     queryset = MagicMock()
     queryset.values.return_value = queryset
     queryset.annotate.return_value = []
@@ -37,15 +38,11 @@ def test_show_aggregate_excludes_specials(monkeypatch):
         SimpleNamespace(objects=manager),
     )
 
-    rapid_rating._stats_by_show(_user(), {11, 12})
+    rapid_rating._stats_by_show(user, {11, 12})
 
     manager.filter.assert_called_once_with(
-        related_season__user=rapid_rating._stats_by_show.__globals__["user"]
-        if "user" in rapid_rating._stats_by_show.__globals__
-        else _user(),
-        related_season__related_tv__user=rapid_rating._stats_by_show.__globals__["user"]
-        if "user" in rapid_rating._stats_by_show.__globals__
-        else _user(),
+        related_season__user=user,
+        related_season__related_tv__user=user,
         related_season__related_tv_id__in={11, 12},
         status="Completed",
         item__season_number__gt=0,
