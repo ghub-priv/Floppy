@@ -28,6 +28,7 @@ from app.models import (
     PostWatchDismissal,
     Sources,
 )
+from app.providers import tmdb
 from app.smart_watched_dates import suggestions_for_media
 
 logger = logging.getLogger(__name__)
@@ -135,7 +136,13 @@ def _episode_details_url(episode: Episode, season_number: int, episode_number: i
     )
 
 
-def _metadata_episode_numbers(media_id, source, season_number):
+def _metadata_next_episode_number(
+    media_id,
+    source,
+    season_number,
+    current_episode_number,
+):
+    """Resolve the next valid episode using Floppy's canonical helper."""
     try:
         metadata = providers.services.get_media_metadata(
             MediaTypes.SEASON.value,
@@ -150,16 +157,13 @@ def _metadata_episode_numbers(media_id, source, season_number):
         TypeError,
         ValueError,
     ):
-        return []
-    numbers = []
-    for row in (metadata or {}).get("episodes") or []:
-        try:
-            number = int(row.get("episode_number"))
-        except (AttributeError, TypeError, ValueError):
-            continue
-        if number > 0:
-            numbers.append(number)
-    return sorted(set(numbers))
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    return tmdb.find_next_episode(
+        current_episode_number,
+        metadata.get("episodes") or [],
+    )
 
 
 def _episode_next_url(episode: Episode) -> str:
@@ -172,12 +176,13 @@ def _episode_next_url(episode: Episode) -> str:
     if season_number < 0 or episode_number < 1:
         return ""
 
-    # Prefer already-known local episode coordinates.
+    # Prefer already-known local episode coordinates in the same library bucket.
     next_item = (
         Item.objects.filter(
             media_id=item.media_id,
             source=item.source,
             media_type=MediaTypes.EPISODE.value,
+            library_media_type=item.library_media_type,
             season_number=season_number,
             episode_number__gt=episode_number,
         )
@@ -191,11 +196,18 @@ def _episode_next_url(episode: Episode) -> str:
             next_item.episode_number,
         )
 
-    # Current Floppy resolves the next released episode from season metadata.
-    episode_numbers = _metadata_episode_numbers(item.media_id, item.source, season_number)
-    later_numbers = [number for number in episode_numbers if number > episode_number]
-    if later_numbers:
-        return _episode_details_url(episode, season_number, later_numbers[0])
+    next_episode_number = _metadata_next_episode_number(
+        item.media_id,
+        item.source,
+        season_number,
+        episode_number,
+    )
+    if next_episode_number is not None:
+        return _episode_details_url(
+            episode,
+            season_number,
+            next_episode_number,
+        )
 
     # Bridge into the immediate next real tracked season first.
     next_season = (
@@ -207,13 +219,18 @@ def _episode_next_url(episode: Episode) -> str:
     )
     if next_season is not None:
         next_season_number = int(next_season.item.season_number)
-        next_numbers = _metadata_episode_numbers(
-            item.media_id,
-            item.source,
+        next_episode_number = _metadata_next_episode_number(
+            next_season.item.media_id,
+            next_season.item.source,
             next_season_number,
+            0,
         )
-        if next_numbers:
-            return _episode_details_url(episode, next_season_number, next_numbers[0])
+        if next_episode_number is not None:
+            return _episode_details_url(
+                episode,
+                next_season_number,
+                next_episode_number,
+            )
 
     # Finally consult show metadata for a season not yet represented locally.
     try:
@@ -240,13 +257,18 @@ def _episode_next_url(episode: Episode) -> str:
         if number > season_number:
             candidate_seasons.append(number)
     for next_season_number in sorted(set(candidate_seasons)):
-        next_numbers = _metadata_episode_numbers(
+        next_episode_number = _metadata_next_episode_number(
             tv.item.media_id,
             tv.item.source,
             next_season_number,
+            0,
         )
-        if next_numbers:
-            return _episode_details_url(episode, next_season_number, next_numbers[0])
+        if next_episode_number is not None:
+            return _episode_details_url(
+                episode,
+                next_season_number,
+                next_episode_number,
+            )
     return ""
 
 
