@@ -370,6 +370,7 @@ class KodiRuntimeMixin:
         }
 
     def _apply_episode_rating(self, payload, user, ids, rating):
+        """Rate the most recent matching watched episode without save side effects."""
         season_number, episode_number = self._extract_season_episode_from_payload(payload)
         try:
             season_number = int(season_number)
@@ -387,40 +388,49 @@ class KodiRuntimeMixin:
         if not media_id:
             return
 
-        episode_rows = Episode.objects.filter(
-            item__media_id=str(media_id),
-            item__source=Sources.TMDB.value,
-            item__media_type=MediaTypes.EPISODE.value,
-            item__season_number=season_number,
-            item__episode_number=episode_number,
-            related_season__user=user,
+        episode = (
+            Episode.objects.filter(
+                item__media_id=str(media_id),
+                item__source=Sources.TMDB.value,
+                item__media_type=MediaTypes.EPISODE.value,
+                item__season_number=season_number,
+                item__episode_number=episode_number,
+                related_season__user=user,
+            )
+            .order_by("-end_date", "-created_at", "-pk")
+            .first()
         )
-        if not episode_rows.exists():
+        if episode is None:
             tracked_tv_item = self._find_existing_tracked_tv_item(
                 user, resolution_ids, media_id
             )
             if tracked_tv_item is not None:
-                episode_rows = Episode.objects.filter(
-                    related_season__related_tv__item=tracked_tv_item,
-                    related_season__user=user,
-                    item__season_number=season_number,
-                    item__episode_number=episode_number,
+                episode = (
+                    Episode.objects.filter(
+                        related_season__related_tv__item=tracked_tv_item,
+                        related_season__user=user,
+                        item__season_number=season_number,
+                        item__episode_number=episode_number,
+                    )
+                    .order_by("-end_date", "-created_at", "-pk")
+                    .first()
                 )
 
-        if not episode_rows.exists():
-            # Never manufacture an episode watch merely to hold a rating.
+        if episode is None:
+            # Never manufacture an Episode/watch record just to hold a rating.
             return
 
-        end_dates = list(episode_rows.values_list("end_date", flat=True))
-        updated = episode_rows.update(score=rating)
-        _invalidate_activity_days(user.id, end_dates)
+        # Preserve the later v2.x fix: Episode.save() has watch-state side effects.
+        # Updating by PK keeps the original "most recent watch" semantics while
+        # bypassing those side effects.
+        Episode.objects.filter(pk=episode.pk).update(score=rating)
+        _invalidate_activity_days(user.id, [episode.end_date])
         logger.info(
-            "Kodi rating saved: TMDB %s S%02dE%02d = %s/10 (%s rows)",
+            "Kodi rating saved: TMDB %s S%02dE%02d = %s/10",
             media_id,
             season_number,
             episode_number,
             rating,
-            updated,
         )
 
     def _get_live_playback_media_type(self, payload):

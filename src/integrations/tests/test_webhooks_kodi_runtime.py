@@ -87,6 +87,51 @@ class KodiWebhookRuntimeTests(SimpleTestCase):
         self.assertEqual(movie.score, Decimal("8.0"))
         movie.save.assert_called_once_with(update_fields=["score"])
 
+    @patch("integrations.webhooks.kodi_runtime._invalidate_activity_days")
+    @patch("integrations.webhooks.kodi_runtime.Episode.objects.filter")
+    def test_episode_rating_updates_only_most_recent_watch(
+        self,
+        episode_filter,
+        invalidate_days,
+    ):
+        selected_query = Mock()
+        ordered_query = Mock()
+        selected_query.order_by.return_value = ordered_query
+        episode = SimpleNamespace(pk=42, end_date="latest-watch")
+        ordered_query.first.return_value = episode
+        update_query = Mock()
+        episode_filter.side_effect = [selected_query, update_query]
+        self.processor._find_tv_media_id = Mock(return_value=("1396", None, None))
+
+        self.processor._apply_episode_rating(
+            {
+                "season": 2,
+                "episode": 3,
+                "tvShowTitle": "Breaking Bad",
+            },
+            self.user,
+            {"tmdb_id": "1396"},
+            Decimal("8.0"),
+        )
+
+        self.assertEqual(episode_filter.call_count, 2)
+        episode_filter.assert_any_call(
+            item__media_id="1396",
+            item__source="tmdb",
+            item__media_type="episode",
+            item__season_number=2,
+            item__episode_number=3,
+            related_season__user=self.user,
+        )
+        selected_query.order_by.assert_called_once_with(
+            "-end_date",
+            "-created_at",
+            "-pk",
+        )
+        episode_filter.assert_called_with(pk=42)
+        update_query.update.assert_called_once_with(score=Decimal("8.0"))
+        invalidate_days.assert_called_once_with(self.user.id, ["latest-watch"])
+
     def test_show_level_ids_override_episode_ids_for_live_identity(self):
         ids = {"tmdb_id": "999999", "tvdb_id": "123"}
         result = self.processor._show_level_ids(
