@@ -2,6 +2,7 @@
 {% load i18n %}
 {% load app_tags %}
 {% load user_tags %}
+{% load derived_music_ratings %}
 
 {% for tracker in media_list %}
   <div {% if forloop.last and media_list.has_next %} hx-get="{% url 'medialist' media_type %}?page={{ media_list.next_page_number }}" hx-trigger="revealed threshold:200px" hx-swap="afterend" hx-include="#filter-form" hx-indicator="#loading-indicator" class="pagination-trigger" data-page="{{ media_list.next_page_number }}" {% endif %}
@@ -80,6 +81,8 @@
         {# quick_rating_overlay_v4_1_3_artist_grid #}
         {% include "app/components/media_card_rating.html" with media=tracker quick_rating_media_type=MediaTypes.MUSIC.value quick_rating_music_kind="artist" quick_rating_music_id=tracker.artist.id quick_rating_value=tracker.score %}
       </div>
+      {% derived_music_rating user "artist" tracker.artist as derived_music_score %}
+      {% include "app/components/derived_music_rating.html" with derived_music_score=derived_music_score variant="card" only %}
       {% if current_sort == 'release_date' and tracker.first_release_date %}
         <p class="media-card-year text-xs text-[var(--color-text-muted)] mt-1">{{ tracker.first_release_date|user_date_format:user }}</p>
       {% elif current_sort == 'date_added' and tracker.created_at %}
