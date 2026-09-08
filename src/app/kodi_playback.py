@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 def _status(message: str, *, ok: bool = False) -> HttpResponse:
     colour = "text-emerald-400" if ok else "text-red-400"
     return HttpResponse(
-        f'<span class="text-sm font-medium {colour}">' f"{escape(message)}</span>"
+        f'<span class="text-sm font-medium {colour}">{escape(message)}</span>'
     )
 
 
@@ -110,7 +110,7 @@ def kodi_play(request):
             resume_position = None
             kodi.activate_window("videos", [plugin_url, "return"])
     except KodiConfigurationError as exc:
-        logger.error("Kodi configuration error: %s", exc)
+        logger.warning("Kodi configuration error: %s", exc)
         return _status("Kodi is not configured.")
     except KodiAuthenticationError as exc:
         logger.warning("Kodi authentication failed: %s", exc)
@@ -124,8 +124,8 @@ def kodi_play(request):
     except KodiProtocolError as exc:
         logger.warning("Invalid Kodi response for %s: %s", description, exc)
         return _status("Invalid response from Kodi.")
-    except KodiError as exc:
-        logger.exception("Unexpected Kodi integration error for %s: %s", description, exc)
+    except KodiError:
+        logger.exception("Unexpected Kodi integration error for %s", description)
         return _status("Kodi request failed.")
 
     logger.info("Kodi action=%s item=%s url=%s", action, description, plugin_url)
