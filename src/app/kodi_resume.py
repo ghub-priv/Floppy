@@ -111,10 +111,11 @@ def queue_pending_resume(
             episode_number,
             position,
         )
-        return position
     except Exception:
         logger.warning("Could not queue Kodi resume", exc_info=True)
         return None
+    else:
+        return position
 
 
 def _matches_live_state(pending: dict, state: dict | None) -> bool:
@@ -164,7 +165,6 @@ def apply_pending_resume(user) -> bool:
             player_id,
             position,
         )
-        return True
     except KodiError as exc:
         logger.debug("Kodi resume not ready for user=%s: %s", user.id, exc)
         return False
@@ -172,3 +172,5 @@ def apply_pending_resume(user) -> bool:
         logger.warning("Invalid pending Kodi resume state: %s", exc)
         clear_pending_resume(user.id)
         return False
+    else:
+        return True
