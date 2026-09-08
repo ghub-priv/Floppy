@@ -89,9 +89,14 @@
           // Suggestions are an enhancement. Provider/network failures must not
           // prevent ordinary manual date tracking.
           console.warn("Smart Watched Dates unavailable", error);
-          window.__floppySmartWatchedDatesRequests.delete(requestKey);
           this.suggestions = [];
         } finally {
+          // The map exists only to collapse the simultaneous Start/End picker
+          // fetches. Do not retain a region-specific response across later
+          // modal opens, because the user's preferred region may have changed.
+          if (window.__floppySmartWatchedDatesRequests.get(requestKey) === request) {
+            window.__floppySmartWatchedDatesRequests.delete(requestKey);
+          }
           this.loaded = true;
           this.loading = false;
         }
