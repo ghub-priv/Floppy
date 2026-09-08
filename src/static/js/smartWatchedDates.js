@@ -146,21 +146,18 @@
           return;
         }
 
-        const current = picker.parts?.();
-        const hour = current ? current.h : picker.hour24;
-        const minute = current ? current.min : picker.minute;
-        const second = current ? current.s : picker.second;
+        // Preserve the accepted v1.0.2/v1.0.3 behaviour: release-date
+        // suggestions represent a date, not the current clock time. When
+        // Floppy tracks time, use noon to avoid midnight/timezone edge cases.
+        const hour = picker.trackTime ? 12 : 0;
         picker.commit(
-          picker.formatValueFromParts(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-          ),
+          picker.formatValueFromParts(year, month, day, hour, 0, 0),
         );
+        // Existing paired-field/runtime behaviour remains owned by the core
+        // picker. Smart Watched Dates only invokes the established start-date
+        // backfill hook after applying its date.
         picker.backfillStartDateIfNeeded?.();
+        picker.closePicker?.();
       },
     }));
   }
