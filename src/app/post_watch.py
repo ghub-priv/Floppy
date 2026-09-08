@@ -247,9 +247,11 @@ def _episode_next_url(episode: Episode) -> str:
         ValueError,
     ):
         return ""
+    if not isinstance(tv_metadata, dict):
+        return ""
 
     candidate_seasons = []
-    for row in (tv_metadata or {}).get("related", {}).get("seasons", []) or []:
+    for row in (tv_metadata.get("related") or {}).get("seasons", []) or []:
         try:
             number = int(row.get("season_number"))
         except (AttributeError, TypeError, ValueError):
