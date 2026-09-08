@@ -24,7 +24,8 @@ class KodiControlTests(SimpleTestCase):
         self.assertIsNone(_kodi_time_to_seconds("bad"))
 
     @patch("app.kodi_control.KodiClient.from_env")
-    def test_seek_back_is_absolute_and_clamped(self, from_env):
+    @patch("app.kodi_control.is_kodi_state", return_value=True)
+    def test_seek_back_is_absolute_and_clamped(self, is_kodi_state, from_env):
         kodi = Mock()
         kodi.get_active_players.return_value = [{"type": "video", "playerid": 1}]
         kodi.get_player_properties.return_value = {
@@ -36,10 +37,12 @@ class KodiControlTests(SimpleTestCase):
         response = kodi_control(self._request("seek_back"))
 
         self.assertEqual(response.status_code, 204)
+        is_kodi_state.assert_called_once_with(self.user.id)
         kodi.seek_seconds.assert_called_once_with(1, 0)
 
     @patch("app.kodi_control.KodiClient.from_env")
-    def test_no_active_player_is_conflict(self, from_env):
+    @patch("app.kodi_control.is_kodi_state", return_value=True)
+    def test_no_active_player_is_conflict(self, is_kodi_state, from_env):
         kodi = Mock()
         kodi.get_active_players.return_value = []
         from_env.return_value = kodi
@@ -47,3 +50,13 @@ class KodiControlTests(SimpleTestCase):
         response = kodi_control(self._request("pause"))
 
         self.assertEqual(response.status_code, 409)
+        is_kodi_state.assert_called_once_with(self.user.id)
+
+    @patch("app.kodi_control.KodiClient.from_env")
+    @patch("app.kodi_control.is_kodi_state", return_value=False)
+    def test_non_kodi_live_state_cannot_control_kodi(self, is_kodi_state, from_env):
+        response = kodi_control(self._request("pause"))
+
+        self.assertEqual(response.status_code, 409)
+        is_kodi_state.assert_called_once_with(self.user.id)
+        from_env.assert_not_called()
