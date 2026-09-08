@@ -22,6 +22,10 @@ def mark_kodi_state(user_id: int) -> bool:
 
 
 def is_kodi_state(user_id: int) -> bool:
-    """Return whether the user's current live session is Kodi-originated."""
+    """Return whether the user's current active live session is Kodi-owned."""
     state = live_playback.get_user_playback_state(user_id)
-    return bool(state and state.get("control_backend") == KODI_CONTROL_BACKEND)
+    return bool(
+        state
+        and state.get("control_backend") == KODI_CONTROL_BACKEND
+        and state.get("status") != live_playback.PLAYBACK_STATUS_STOPPED
+    )
