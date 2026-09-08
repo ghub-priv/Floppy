@@ -1,0 +1,47 @@
+{% load i18n %}
+{% load app_tags %}
+
+{# rapid_rating_v2_nav #}
+{% url 'rapid_rating' as rapid_rating_url %}
+<li>
+  <a href="{{ rapid_rating_url }}"
+     hx-boost="false"
+     class="flex items-center space-x-3 px-4 py-2 rounded-md transition-colors duration-200 text-sm {% if request.path == rapid_rating_url %}text-[var(--color-text)] bg-[var(--color-border)]{% else %}text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-hover-dim)]{% endif %}">
+    {% if request.path|str_equals:rapid_rating_url %}
+      {% include "app/icons/star.svg" with classes="w-5 h-5 text-[var(--color-link)] " %}
+    {% else %}
+      {% include "app/icons/star.svg" with classes="w-5 h-5" %}
+    {% endif %}
+    <span>{% translate "Rapid Rating" %}</span>
+  </a>
+</li>
+
+{# post_watch_workflow_nav_v1_1 #}
+{% url 'post_watch' as post_watch_url %}
+<li>
+  <a href="{{ post_watch_url }}"
+     hx-boost="false"
+     class="flex items-center space-x-3 px-4 py-2 rounded-md transition-colors duration-200 text-sm {% if request.path == post_watch_url %}text-[var(--color-text)] bg-[var(--color-border)]{% else %}text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-hover-dim)]{% endif %}">
+    {% if request.path|str_equals:post_watch_url %}
+      {% include "app/icons/clock.svg" with classes="w-5 h-5 text-[var(--color-link)] " %}
+    {% else %}
+      {% include "app/icons/clock.svg" with classes="w-5 h-5" %}
+    {% endif %}
+    <span>{% translate "Post-Watch" %}</span>
+  </a>
+</li>
+
+{# kodi_library_awareness_nav_v1 #}
+{% url 'kodi_library' as kodi_library_url %}
+<li>
+  <a href="{{ kodi_library_url }}"
+     hx-boost="false"
+     class="flex items-center space-x-3 px-4 py-2 rounded-md transition-colors duration-200 text-sm {% if request.path == kodi_library_url %}text-[var(--color-text)] bg-[var(--color-border)]{% else %}text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-hover-dim)]{% endif %}">
+    {% if request.path|str_equals:kodi_library_url %}
+      {% include "app/icons/play.svg" with classes="w-5 h-5 text-[var(--color-link)]" %}
+    {% else %}
+      {% include "app/icons/play.svg" with classes="w-5 h-5" %}
+    {% endif %}
+    <span>{% translate "Kodi Library" %}</span>
+  </a>
+</li>
