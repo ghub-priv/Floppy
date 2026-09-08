@@ -14,6 +14,20 @@ from .kodi_runtime import (
 logger = logging.getLogger(__name__)
 
 
+def _coerce_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
     """Processor for Kodi webhook events via the HTTP Scrobbler add-on."""
 
@@ -24,19 +38,22 @@ class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
         if payload.get("event") == KodiEvent.PLAYBACK_END:
             return True
         if payload.get("event") == KodiEvent.PLAYBACK_STOP:
-            percent = payload.get("progress", {}).get("percent", 0)
-            if percent and percent >= PERCENT_COMPLETE_THRESHOLD:
-                return True
+            progress = payload.get("progress") or {}
+            if not isinstance(progress, dict):
+                return False
+            percent = _coerce_float(progress.get("percent"))
+            return percent is not None and percent >= PERCENT_COMPLETE_THRESHOLD
         return False
 
     def _get_media_type(self, payload):
-        return self.MEDIA_TYPE_MAPPING.get(payload.get("mediaType", "").capitalize())
+        media_type = (payload.get("mediaType") or "").capitalize()
+        return self.MEDIA_TYPE_MAPPING.get(media_type)
 
     def _get_media_title(self, payload):
         if self._get_media_type(payload) == MediaTypes.TV.value:
             series_name = payload.get("tvShowTitle")
-            season_number = payload.get("season")
-            episode_number = payload.get("episode")
+            season_number = _coerce_int(payload.get("season"))
+            episode_number = _coerce_int(payload.get("episode"))
             if season_number is None or episode_number is None:
                 return series_name
             return f"{series_name} S{season_number:02d}E{episode_number:02d}"
@@ -64,8 +81,12 @@ class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
         # runtime layer explicitly chooses tvShowUniqueIds only where a show
         # identity is required for live state, rating, or completed-season
         # replay resolution.
-        episode_ids = payload.get("uniqueIds", {})
-        series_ids = payload.get("tvShowUniqueIds", {})
+        episode_ids = payload.get("uniqueIds") or {}
+        series_ids = payload.get("tvShowUniqueIds") or {}
+        if not isinstance(episode_ids, dict):
+            episode_ids = {}
+        if not isinstance(series_ids, dict):
+            series_ids = {}
         return {
             "tmdb_id": episode_ids.get("tmdb") or series_ids.get("tmdb"),
             "imdb_id": episode_ids.get("imdb") or series_ids.get("imdb"),
