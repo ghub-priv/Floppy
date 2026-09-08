@@ -1,0 +1,46 @@
+{% load i18n %}
+{% if derived_music_score %}
+  {% if variant == "detail" %}
+    <div data-derived-music-rating="{{ derived_music_score.kind }}"
+         class="inline-flex h-[1.875rem] min-w-0 cursor-help items-center gap-0.5 overflow-hidden rounded-full border border-amber-400/20 bg-amber-500/[0.08] pl-0 pr-1.5 text-[12px] text-white shadow-sm sm:h-8 sm:gap-2 sm:pr-3 sm:text-sm"
+         title="{{ derived_music_score.title }}">
+      <span class="sr-only">{% translate "Derived personal rating" %}</span>
+      <span class="-my-px -ml-px flex h-[1.875rem] w-[1.875rem] shrink-0 items-center justify-center rounded-full border border-amber-400/30 bg-amber-500/15 sm:h-8 sm:w-8">
+        {% include "app/icons/star.svg" with classes="h-3.5 w-3.5 text-amber-400 fill-current sm:h-4 sm:w-4" %}
+      </span>
+      <span class="hidden font-medium text-amber-200 sm:inline">{% translate "Derived" %}</span>
+      {% if derived_music_score.score is not None %}
+        <span class="font-semibold text-[var(--color-text)]">{{ derived_music_score.score }}</span>
+      {% else %}
+        <span class="font-semibold text-[var(--color-text-muted)]">-</span>
+      {% endif %}
+      <span class="text-[var(--color-text-muted)]">|</span>
+      <span class="truncate text-[var(--color-text-secondary)]">
+        {% if derived_music_score.kind == "album" %}
+          {% blocktranslate trimmed with rated=derived_music_score.rated count count=derived_music_score.total %}{{ rated }}/{{ count }} track rated{% plural %}{{ rated }}/{{ count }} tracks rated{% endblocktranslate %}
+        {% else %}
+          {% blocktranslate trimmed with rated=derived_music_score.rated count count=derived_music_score.total %}{{ rated }}/{{ count }} album rated{% plural %}{{ rated }}/{{ count }} albums rated{% endblocktranslate %}
+        {% endif %}
+      </span>
+    </div>
+  {% else %}
+    <div data-derived-music-rating="{{ derived_music_score.kind }}"
+         class="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] leading-tight"
+         title="{{ derived_music_score.title }}">
+      <span class="shrink-0 font-medium text-amber-300">{% translate "Derived" %}</span>
+      {% if derived_music_score.score is not None %}
+        <span class="shrink-0 font-semibold text-[var(--color-text)]">{{ derived_music_score.score }}</span>
+      {% else %}
+        <span class="shrink-0 font-semibold text-[var(--color-text-muted)]">-</span>
+      {% endif %}
+      <span class="shrink-0 text-[var(--color-text-muted)]">·</span>
+      <span class="truncate text-[var(--color-text-muted)]">
+        {% if derived_music_score.kind == "album" %}
+          {% blocktranslate trimmed with rated=derived_music_score.rated count count=derived_music_score.total %}{{ rated }}/{{ count }} track{% plural %}{{ rated }}/{{ count }} tracks{% endblocktranslate %}
+        {% else %}
+          {% blocktranslate trimmed with rated=derived_music_score.rated count count=derived_music_score.total %}{{ rated }}/{{ count }} album{% plural %}{{ rated }}/{{ count }} albums{% endblocktranslate %}
+        {% endif %}
+      </span>
+    </div>
+  {% endif %}
+{% endif %}
