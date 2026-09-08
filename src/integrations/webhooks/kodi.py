@@ -54,10 +54,16 @@ class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
     def _extract_series_title(self, payload):
         return payload.get("tvShowTitle")
 
+    def _skip_completed_episode_replay_activity(self, payload, user, ids):
+        """Resolve the completed-season safeguard against the show identity."""
+        show_ids = self._show_level_ids(payload, ids)
+        return super()._skip_completed_episode_replay_activity(payload, user, show_ids)
+
     def _extract_external_ids(self, payload):
         # Preserve upstream Floppy's episode-first ID behaviour. The Kodi
         # runtime layer explicitly chooses tvShowUniqueIds only where a show
-        # identity is required for live state or episode-rating resolution.
+        # identity is required for live state, rating, or completed-season
+        # replay resolution.
         episode_ids = payload.get("uniqueIds", {})
         series_ids = payload.get("tvShowUniqueIds", {})
         return {
