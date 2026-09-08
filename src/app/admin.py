@@ -12,6 +12,7 @@ from app.models import (
     MetadataProviderPreference,
     MoviePlay,
     PlaybackProgress,
+    PostWatchDismissal,
 )
 
 
@@ -46,6 +47,16 @@ class MoviePlayAdmin(admin.ModelAdmin):
 
     search_fields = ["movie__item__title"]
     list_display = ["__str__", "end_date", "external_id"]
+
+
+@admin.register(PostWatchDismissal)
+class PostWatchDismissalAdmin(admin.ModelAdmin):
+    """Admin for per-watch Post-Watch dismissals."""
+
+    search_fields = ["user__username", "watch_key"]
+    list_display = ["user", "watch_key", "dismissed_at"]
+    list_filter = ["dismissed_at"]
+    raw_id_fields = ["user"]
 
 
 class MediaAdmin(admin.ModelAdmin):
@@ -95,6 +106,7 @@ SpecialModels = [
     "Item",
     "Episode",
     "MoviePlay",
+    "PostWatchDismissal",
     "BasicMedia",
     "Artist",
     "Album",
