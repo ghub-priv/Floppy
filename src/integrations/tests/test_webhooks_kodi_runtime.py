@@ -125,6 +125,40 @@ class KodiWebhookRuntimeTests(SimpleTestCase):
             ["first-watch", "repeat-watch"],
         )
 
+    def test_completed_replay_guard_uses_show_level_identity(self):
+        self.processor._get_media_type = Mock(return_value="tv")
+        self.processor._is_played = Mock(return_value=False)
+        self.processor._extract_season_episode_from_payload = Mock(return_value=(2, 3))
+        self.processor._find_tv_media_id = Mock(return_value=(None, None, None))
+        payload = {
+            "tvShowTitle": "Breaking Bad",
+            "tvShowUniqueIds": {"tmdb": "1396"},
+        }
+        episode_ids = {
+            "tmdb_id": "999999",
+            "imdb_id": None,
+            "tvdb_id": "123",
+            "tvmaze_id": None,
+        }
+
+        self.assertFalse(
+            self.processor._skip_completed_episode_replay_activity(
+                payload,
+                self.user,
+                episode_ids,
+            )
+        )
+        self.processor._find_tv_media_id.assert_called_once_with(
+            {
+                "tmdb_id": "1396",
+                "imdb_id": None,
+                "tvdb_id": "123",
+                "tvmaze_id": None,
+            },
+            series_title="Breaking Bad",
+            allow_title_fallback=True,
+        )
+
     def test_show_level_ids_override_episode_ids_for_live_identity(self):
         ids = {"tmdb_id": "999999", "tvdb_id": "123"}
         result = self.processor._show_level_ids(
