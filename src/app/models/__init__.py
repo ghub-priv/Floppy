@@ -74,6 +74,7 @@ from app.models.podcast import (
     PodcastShow,
     PodcastShowTracker,
 )
+from app.models.post_watch import PostWatchDismissal
 from app.models.provider_credential import (
     InstanceProviderCredential,
     UserProviderCredential,
@@ -155,6 +156,7 @@ __all__ = [
     "PodcastEpisode",
     "PodcastShow",
     "PodcastShowTracker",
+    "PostWatchDismissal",
     "ProviderMetadataStatus",
     "RewatchAlreadyCompleteError",
     "Season",
