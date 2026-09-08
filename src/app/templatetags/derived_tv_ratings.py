@@ -40,6 +40,15 @@ def _display_score(user, raw_average):
     )
 
 
+def _season_number(media):
+    """Return a normalised season number when metadata supplies one."""
+    value = _media_value(media, "season_number", None)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _episode_rows(user, media_type, media):
     """Return completed episode rows in stable episode/recency order."""
     media_id = str(_media_value(media, "media_id", "") or "").strip()
@@ -61,10 +70,8 @@ def _episode_rows(user, media_type, media):
         # the main show's derived score.
         qs = qs.filter(item__season_number__gt=0)
     elif media_type == MediaTypes.SEASON.value:
-        season_number = _media_value(media, "season_number", None)
-        try:
-            season_number = int(season_number)
-        except (TypeError, ValueError):
+        season_number = _season_number(media)
+        if season_number is None:
             return Episode.objects.none().values("item_id", "score")
         qs = qs.filter(item__season_number=season_number)
     else:
@@ -124,7 +131,7 @@ def derived_tv_rating(user, media_type, media):
     raw_average = score_sum / rated if rated else None
 
     is_show = media_type == MediaTypes.TV.value
-    season_number = _media_value(media, "season_number", None)
+    season_number = _season_number(media)
 
     if is_show:
         label = _("TV Show")
