@@ -1,4 +1,4 @@
-# Floppy — Source-Port & Integration Fork
+# Floppy - Source-Port & Integration Fork
 
 This repository is our working fork of [dannyvfilms/Floppy](https://github.com/dannyvfilms/Floppy).
 
