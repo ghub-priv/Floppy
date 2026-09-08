@@ -1,3 +1,4 @@
+from datetime import timedelta
 from itertools import count
 from unittest.mock import patch
 
@@ -85,11 +86,11 @@ class PostWatchQueueSemanticsTests(TestCase):
         movie = self._movie()
         older = MoviePlay.objects.create(
             movie=movie,
-            end_date=timezone.now() - timezone.timedelta(hours=2),
+            end_date=timezone.now() - timedelta(hours=2),
         )
         newer = MoviePlay.objects.create(
             movie=movie,
-            end_date=timezone.now() - timezone.timedelta(hours=1),
+            end_date=timezone.now() - timedelta(hours=1),
         )
 
         cards = post_watch.build_post_watch_cards(self.user)
@@ -123,14 +124,14 @@ class PostWatchQueueSemanticsTests(TestCase):
         older = Episode(
             item=episode_item,
             related_season=season,
-            end_date=timezone.now() - timezone.timedelta(hours=2),
+            end_date=timezone.now() - timedelta(hours=2),
             score=None,
         )
         Episode.save_base(older, force_insert=True)
         newer = Episode(
             item=episode_item,
             related_season=season,
-            end_date=timezone.now() - timezone.timedelta(hours=1),
+            end_date=timezone.now() - timedelta(hours=1),
             score=None,
         )
         Episode.save_base(newer, force_insert=True)
@@ -158,5 +159,6 @@ class PostWatchQueueSemanticsTests(TestCase):
             [card["watch_key"] for card in cards],
             [f"episode:{newer.pk}"],
         )
-        self.assertNotIn(f"episode:{older.pk}", {card["watch_key"] for card in cards})
-        self.assertNotIn(f"episode:{dropped.pk}", {card["watch_key"] for card in cards})
+        card_keys = {card["watch_key"] for card in cards}
+        self.assertNotIn(f"episode:{older.pk}", card_keys)
+        self.assertNotIn(f"episode:{dropped.pk}", card_keys)
