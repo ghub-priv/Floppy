@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -57,6 +58,34 @@ class KodiWebhookRuntimeTests(SimpleTestCase):
         self.processor._process_rating.assert_called_once_with(payload, self.user)
         self.processor._update_live_playback_state.assert_not_called()
         self.processor._process_media.assert_not_called()
+
+    @patch("integrations.webhooks.kodi_runtime.select_preferred_activity_entry")
+    @patch("integrations.webhooks.kodi_runtime.Movie.objects.filter")
+    @patch("integrations.webhooks.kodi_runtime.Item.objects.filter")
+    def test_existing_movie_rating_uses_score_only_save(
+        self,
+        item_filter,
+        movie_filter,
+        select_preferred,
+    ):
+        item = Mock()
+        item_filter.return_value.first.return_value = item
+        movie_query = Mock()
+        movie_filter.return_value = movie_query
+        movie = Mock()
+        select_preferred.return_value = movie
+        self.processor._resolve_movie_tmdb_id = Mock(return_value="603")
+
+        self.processor._apply_movie_rating(
+            self.user,
+            {"tmdb_id": "603"},
+            Decimal("8.0"),
+        )
+
+        movie_filter.assert_called_once_with(item=item, user=self.user)
+        select_preferred.assert_called_once_with(movie_query)
+        self.assertEqual(movie.score, Decimal("8.0"))
+        movie.save.assert_called_once_with(update_fields=["score"])
 
     def test_show_level_ids_override_episode_ids_for_live_identity(self):
         ids = {"tmdb_id": "999999", "tvdb_id": "123"}
