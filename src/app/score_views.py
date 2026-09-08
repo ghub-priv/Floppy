@@ -11,7 +11,7 @@ from django.template.loader import render_to_string
 from django.views.decorators.http import require_POST
 
 from app import history_cache
-from app.models import Album, BasicMedia, Episode, Season
+from app.models import Album, BasicMedia, Episode, MediaTypes, Season
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,28 @@ def update_media_score(request, media_type, instance_id):
 
     if toggle and score is not None and media.score == score:
         score = None
+
+    # History cards identify one concrete Episode instance. The normal generic
+    # response renders card/detail fragments that Episode does not use, so keep
+    # this path JSON-only and invalidate the exact History day explicitly.
+    if media_type == MediaTypes.EPISODE.value:
+        Episode.objects.filter(pk=media.pk).update(score=score)
+        day_key = history_cache.history_day_key(media.end_date)
+        if day_key:
+            history_cache.invalidate_history_days(
+                request.user.id,
+                day_keys=[day_key],
+                logging_styles=("sessions", "repeats"),
+                reason="history_quick_rating_episode",
+            )
+        return JsonResponse(
+            {
+                "success": True,
+                "score": request.user.format_score_for_display(score)
+                if score is not None
+                else None,
+            },
+        )
 
     media.score = score
     media.save()
@@ -149,9 +171,6 @@ def update_episode_score(request, season_id, episode_number):
         request.user,
     )
 
-    # `episodes.update()` runs a raw SQL UPDATE and does not emit post_save, so
-    # the Episode signal that refreshes the history cache never fires. Invalidate
-    # the affected history day(s) here so the rating shows on the History page.
     day_keys = [
         history_cache.history_day_key(end_date)
         for end_date in episodes.values_list("end_date", flat=True)
@@ -227,6 +246,7 @@ def update_artist_score(request, artist_id):
     )
 
     score_raw = request.POST.get("score")
+    toggle = request.POST.get("toggle")
     if score_raw is None:
         return HttpResponseBadRequest("Invalid score.")
     try:
@@ -236,6 +256,10 @@ def update_artist_score(request, artist_id):
     score = request.user.scale_score_for_storage(score)
     if score is None:
         return HttpResponseBadRequest("Invalid score.")
+
+    if toggle and tracker.score == score:
+        score = None
+
     tracker.score = score
     tracker.save()
     logger.info(
@@ -256,7 +280,9 @@ def update_artist_score(request, artist_id):
     return JsonResponse(
         {
             "success": True,
-            "score": request.user.format_score_for_display(score),
+            "score": request.user.format_score_for_display(score)
+            if score is not None
+            else None,
         },
     )
 
@@ -274,6 +300,7 @@ def update_album_score(request, album_id):
     )
 
     score_raw = request.POST.get("score")
+    toggle = request.POST.get("toggle")
     if score_raw is None:
         return HttpResponseBadRequest("Invalid score.")
     try:
@@ -283,6 +310,10 @@ def update_album_score(request, album_id):
     score = request.user.scale_score_for_storage(score)
     if score is None:
         return HttpResponseBadRequest("Invalid score.")
+
+    if toggle and tracker.score == score:
+        score = None
+
     tracker.score = score
     tracker.save()
     logger.info(
@@ -306,6 +337,8 @@ def update_album_score(request, album_id):
     return JsonResponse(
         {
             "success": True,
-            "score": request.user.format_score_for_display(score),
+            "score": request.user.format_score_for_display(score)
+            if score is not None
+            else None,
         },
     )
