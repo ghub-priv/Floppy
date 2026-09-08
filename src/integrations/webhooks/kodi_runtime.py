@@ -23,6 +23,8 @@ PERCENT_COMPLETE_THRESHOLD = 80
 
 
 class KodiEvent(StrEnum):
+    """Kodi HTTP Scrobbler event names used by the v2.7 runtime."""
+
     PLAYBACK_START = "start"
     PLAYBACK_PAUSE = "pause"
     PLAYBACK_RESUME = "resume"
@@ -96,6 +98,7 @@ class KodiRuntimeMixin:
     """Kodi-specific runtime layer mixed into KodiWebhookProcessor."""
 
     def process_payload(self, payload, user):
+        """Process one Kodi playback or rating webhook payload."""
         # MDBList Scrobbler posts rating-only payloads through this webhook.
         # Handle them before playback so a rating can never alter Now Playing,
         # progress, watched state, or episode/season reconciliation.
