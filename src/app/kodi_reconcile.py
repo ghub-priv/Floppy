@@ -20,6 +20,7 @@ RECONCILE_GUARD_SECONDS = 15
 RECONCILE_GUARD_PREFIX = "kodi_reconcile_v1"
 COLD_RECOVERY_GUARD_SECONDS = 20
 COLD_RECOVERY_GUARD_PREFIX = "kodi_cold_recover_v1"
+MILLISECONDS_ROUND_THRESHOLD = 500
 
 
 def _coerce_int(value, default=None):
@@ -41,7 +42,7 @@ def _time_to_seconds(value) -> int | None:
     if any(part is None for part in (hours, minutes, seconds, milliseconds)):
         return None
     total = max(0, hours) * 3600 + max(0, minutes) * 60 + max(0, seconds)
-    if milliseconds >= 500:
+    if milliseconds >= MILLISECONDS_ROUND_THRESHOLD:
         total += 1
     return total
 
