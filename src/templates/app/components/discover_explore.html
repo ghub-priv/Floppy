@@ -1,0 +1,349 @@
+{% load app_tags %}
+{% load i18n %}
+
+<section class="rounded-xl border border-[var(--color-surface-border)] bg-[var(--color-surface)] p-4"
+         aria-labelledby="{{ explore_id_prefix }}-title">
+  <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+    <div>
+      <h2 id="{{ explore_id_prefix }}-title"
+          class="text-xl font-semibold text-[var(--color-text)]">{{ explore_title }}</h2>
+      <p class="mt-1 text-sm text-[var(--color-text-muted)]">{{ explore_description }}</p>
+    </div>
+    <span class="rounded-full border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-secondary)]">{{ watch_status_label }}</span>
+  </div>
+
+  <form hx-get="{{ form_url }}"
+        hx-target="#{{ explore_target_id }}"
+        hx-swap="innerHTML"
+        hx-indicator="#{{ explore_id_prefix }}-loading">
+    {% if selected_sort == "random" and random_seed is not None %}
+      <input type="hidden" name="seed" value="{{ random_seed }}">
+    {% endif %}
+
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+      <div class="relative sm:col-span-2">
+        <span class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{% translate "Include genres · match all" %}</span>
+        <details class="group relative"
+                 @click.outside="if ($el.open) $el.removeAttribute('open')">
+          <summary class="min-h-10 cursor-pointer list-none truncate rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm text-[var(--color-text)]">
+            {% if selected_genre_names %}{{ selected_genre_names|join:", " }}{% else %}{% translate "Any genre" %}{% endif %}
+          </summary>
+          <div class="absolute left-0 top-full z-40 mt-1 max-h-80 w-[min(28rem,90vw)] overflow-auto rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] p-3 shadow-xl">
+            <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+              {% for genre in genre_options %}
+                <label class="flex cursor-pointer items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                  <input type="checkbox"
+                         name="genre"
+                         value="{{ genre.id }}"
+                         {% if genre.id in selected_genres %}checked{% endif %}>
+                  <span>{{ genre.name }}</span>
+                </label>
+              {% empty %}
+                <span class="col-span-2 text-sm text-[var(--color-text-muted)]">{% translate "Genre data is unavailable." %}</span>
+              {% endfor %}
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="relative sm:col-span-2">
+        <span class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{% translate "Exclude genres · match any" %}</span>
+        <details class="group relative"
+                 @click.outside="if ($el.open) $el.removeAttribute('open')">
+          <summary class="min-h-10 cursor-pointer list-none truncate rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm text-[var(--color-text)]">
+            {% if selected_excluded_genre_names %}{{ selected_excluded_genre_names|join:", " }}{% else %}{% translate "Exclude none" %}{% endif %}
+          </summary>
+          <div class="absolute left-0 top-full z-40 mt-1 max-h-80 w-[min(28rem,90vw)] overflow-auto rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] p-3 shadow-xl">
+            <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+              {% for genre in genre_options %}
+                <label class="flex cursor-pointer items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                  <input type="checkbox"
+                         name="exclude_genre"
+                         value="{{ genre.id }}"
+                         {% if genre.id in selected_excluded_genres %}checked{% endif %}>
+                  <span>{{ genre.name }}</span>
+                </label>
+              {% empty %}
+                <span class="col-span-2 text-sm text-[var(--color-text-muted)]">{% translate "Genre data is unavailable." %}</span>
+              {% endfor %}
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div>
+        <label for="{{ explore_id_prefix }}-decade"
+               class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{% translate "Decade" %}</label>
+        <select id="{{ explore_id_prefix }}-decade"
+                name="decade"
+                class="min-h-10 w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm text-[var(--color-text)]">
+          <option value="">{% translate "Any decade" %}</option>
+          {% for decade in decades %}
+            <option value="{{ decade }}" {% if selected_decade == decade %}selected{% endif %}>{{ decade }}s</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <span class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{% translate "Custom years" %}</span>
+        <div class="grid grid-cols-2 gap-1.5">
+          <input type="number"
+                 name="from_year"
+                 min="{{ min_year }}"
+                 max="{{ max_year }}"
+                 value="{{ from_year|default_if_none:'' }}"
+                 placeholder="{% translate 'From' %}"
+                 aria-label="{% translate 'From year' %}"
+                 class="min-h-10 min-w-0 rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-2 py-2 text-sm text-[var(--color-text)]">
+          <input type="number"
+                 name="to_year"
+                 min="{{ min_year }}"
+                 max="{{ max_year }}"
+                 value="{{ to_year|default_if_none:'' }}"
+                 placeholder="{% translate 'To' %}"
+                 aria-label="{% translate 'To year' %}"
+                 class="min-h-10 min-w-0 rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-2 py-2 text-sm text-[var(--color-text)]">
+        </div>
+        {% if custom_year_active %}
+          <p class="mt-1 text-[11px] text-[var(--color-text-muted)]">{% translate "Custom years override decade." %}</p>
+        {% endif %}
+      </div>
+
+      <div>
+        <label for="{{ explore_id_prefix }}-runtime"
+               class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{{ runtime_label }}</label>
+        <select id="{{ explore_id_prefix }}-runtime"
+                name="runtime"
+                class="min-h-10 w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm text-[var(--color-text)]">
+          {% for value, label in runtime_options %}
+            <option value="{{ value }}" {% if selected_runtime == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <label for="{{ explore_id_prefix }}-watch-status"
+               class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{% translate "Library status" %}</label>
+        <select id="{{ explore_id_prefix }}-watch-status"
+                name="watch_status"
+                class="min-h-10 w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm text-[var(--color-text)]">
+          {% for value, label in watch_status_options %}
+            <option value="{{ value }}" {% if selected_watch_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      {% if show_production_status_filter %}
+        <div>
+          <label for="{{ explore_id_prefix }}-production-status"
+                 class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{% translate "Show status" %}</label>
+          <select id="{{ explore_id_prefix }}-production-status"
+                  name="production_status"
+                  class="min-h-10 w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm text-[var(--color-text)]">
+            {% for value, label in production_status_options %}
+              <option value="{{ value }}" {% if selected_production_status == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      {% endif %}
+
+      <div>
+        <label for="{{ explore_id_prefix }}-rating"
+               class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{% translate "Minimum rating" %}</label>
+        <select id="{{ explore_id_prefix }}-rating"
+                name="min_rating"
+                class="min-h-10 w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm text-[var(--color-text)]">
+          {% for rating in min_rating_options %}
+            <option value="{{ rating }}" {% if selected_min_rating == rating %}selected{% endif %}>
+              {% if rating %}{{ rating }}+{% else %}{% translate "Any rating" %}{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <label for="{{ explore_id_prefix }}-sort"
+               class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{% translate "Sort by" %}</label>
+        <select id="{{ explore_id_prefix }}-sort"
+                name="sort"
+                class="min-h-10 w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm text-[var(--color-text)]">
+          {% for value, label in sort_options %}
+            <option value="{{ value }}" {% if selected_sort == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="flex flex-wrap items-end gap-2 sm:col-span-2 lg:col-span-4 xl:col-span-6">
+        <button type="submit"
+                class="min-h-10 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-500 cursor-pointer">{% translate "Apply filters" %}</button>
+        <button type="submit"
+                name="surprise"
+                value="1"
+                class="min-h-10 rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-600 cursor-pointer">{% translate "Surprise me" %}</button>
+        {% if selected_sort == "random" %}
+          <button type="submit"
+                  name="shuffle"
+                  value="1"
+                  class="min-h-10 rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-4 py-2 text-sm font-semibold text-[var(--color-text)] hover:bg-[var(--color-surface-strong)] cursor-pointer">{% translate "Shuffle" %}</button>
+        {% endif %}
+        <button type="button"
+                hx-get="{{ clear_url }}"
+                hx-target="#{{ explore_target_id }}"
+                hx-swap="innerHTML"
+                hx-indicator="#{{ explore_id_prefix }}-loading"
+                class="min-h-10 rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-4 py-2 text-sm font-semibold text-[var(--color-text)] hover:bg-[var(--color-surface-strong)] cursor-pointer">{% translate "Clear" %}</button>
+      </div>
+    </div>
+  </form>
+
+  <div class="my-4 flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)]">
+    {% if surprise_mode %}
+      <span>{% translate "One surprise pick from the current filters" %}</span>
+    {% elif using_local_library %}
+      <span>{{ cards|length }} {% if cards|length == 1 %}{{ local_result_singular }}{% else %}{{ local_result_plural }}{% endif %} {% translate "shown" %}</span>
+      <span>•</span>
+      <span>{{ local_total_results }} {% translate "matching in your library" %}</span>
+    {% else %}
+      <span>{{ cards|length }} {% if cards|length == 1 %}{{ result_singular }}{% else %}{{ result_plural }}{% endif %} {% translate "shown" %}</span>
+      {% if provider_total_results %}
+        <span>•</span>
+        <span>{{ provider_total_results }} {% translate "provider matches before local exclusions" %}</span>
+      {% endif %}
+    {% endif %}
+    <span id="{{ explore_id_prefix }}-loading"
+          class="htmx-indicator text-[var(--color-text-muted)]">{% translate "Loading…" %}</span>
+  </div>
+
+  {% if surprise_mode %}
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-600/40 bg-amber-700/10 p-3">
+      <span class="text-sm text-[var(--color-text-secondary)]">{% translate "Floppy picked one title from your current filters." %}</span>
+      <div class="flex flex-wrap gap-2">
+        <button type="button"
+                hx-get="{{ surprise_again_url }}"
+                hx-target="#{{ explore_target_id }}"
+                hx-swap="innerHTML"
+                hx-indicator="#{{ explore_id_prefix }}-loading"
+                class="rounded-lg bg-amber-700 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-600 cursor-pointer">{% translate "Another surprise" %}</button>
+        <button type="button"
+                hx-get="{{ exit_surprise_url }}"
+                hx-target="#{{ explore_target_id }}"
+                hx-swap="innerHTML"
+                hx-indicator="#{{ explore_id_prefix }}-loading"
+                class="rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm font-semibold text-[var(--color-text)] hover:bg-[var(--color-surface-strong)] cursor-pointer">{% translate "Back to results" %}</button>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if cards %}
+    <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 {% if surprise_mode %}mx-auto max-w-56 !grid-cols-1{% endif %}">
+      {% for card in cards %}
+        <div x-data="{ listsOpen: false }"
+             class="overflow-hidden rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] shadow-sm transition hover:border-indigo-500 hover:-translate-y-0.5">
+          <div class="group relative">
+            <a href="{{ card.details_url }}">
+              <img src="{{ card.image|default:IMG_NONE }}"
+                   alt="{{ card.title }} poster"
+                   loading="lazy"
+                   class="aspect-[2/3] w-full bg-[var(--color-hover-dim)] object-cover">
+            </a>
+            {% if card.status_badge %}
+              <span class="absolute left-2 top-2 z-20 rounded-full bg-gray-900/90 px-2 py-1 text-[11px] font-semibold text-white">{{ card.status_badge }}</span>
+            {% endif %}
+
+            <div class="absolute inset-0 flex items-center justify-center opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+              <div class="absolute inset-0 bg-black/50"></div>
+              <a href="{{ card.details_url }}"
+                 class="absolute inset-0 z-0"
+                 aria-label="{% blocktranslate trimmed with value_1=card.title %}Open {{ value_1 }}{% endblocktranslate %}"></a>
+              <div class="relative z-10 flex items-center justify-center gap-2.5">
+                {% if card.can_plan %}
+                  <button type="button"
+                          title="{% translate 'Add to Planning' %}"
+                          class="rounded-full bg-indigo-600 p-2.5 text-white transition hover:scale-110 hover:bg-indigo-500 cursor-pointer"
+                          hx-post="{% url 'discover_action' %}"
+                          hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                          hx-target="#discover-rows"
+                          hx-swap="innerHTML"
+                          hx-vals='{"action":"planning","candidate_media_type":"{{ card.candidate.media_type|escapejs }}","identity_media_type":"","library_media_type":"","source":"{{ card.candidate.source|escapejs }}","media_id":"{{ card.candidate.media_id|escapejs }}","season_number":"","active_media_type":"{{ active_media_type|escapejs }}","show_more":"0","row_key":"{{ row_key|escapejs }}","title":"{{ card.title|escapejs }}","image":"{{ card.image|default:""|escapejs }}","release_date":"{{ card.candidate.release_date|default:""|escapejs }}","discover_debug":"0"}'>
+                    {% include "app/icons/states/planning.svg" with classes="w-4 h-4" %}
+                  </button>
+                {% endif %}
+
+                <button type="button"
+                        title="{% translate 'Hide from Discover' %}"
+                        class="rounded-full bg-rose-600 p-2.5 text-white transition hover:scale-110 hover:bg-rose-500 cursor-pointer"
+                        hx-post="{% url 'discover_action' %}"
+                        hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                        hx-target="#discover-rows"
+                        hx-swap="innerHTML"
+                        hx-vals='{"action":"dismiss","candidate_media_type":"{{ card.candidate.media_type|escapejs }}","identity_media_type":"","library_media_type":"","source":"{{ card.candidate.source|escapejs }}","media_id":"{{ card.candidate.media_id|escapejs }}","season_number":"","active_media_type":"{{ active_media_type|escapejs }}","show_more":"0","row_key":"{{ row_key|escapejs }}","title":"{{ card.title|escapejs }}","image":"{{ card.image|default:""|escapejs }}","release_date":"{{ card.candidate.release_date|default:""|escapejs }}","discover_debug":"0"}'>
+                  {% include "app/icons/eye-closed.svg" with classes="w-4 h-4" %}
+                </button>
+
+                <button type="button"
+                        title="{% translate 'Add to custom lists' %}"
+                        class="rounded-full bg-emerald-600 p-2.5 text-white transition hover:scale-110 hover:bg-emerald-500 cursor-pointer"
+                        hx-get="{% media_view_url 'lists_modal' card.candidate %}"
+                        hx-vals='{"return_url": "{{ refresh_url|urlencode }}"}'
+                        hx-target="#{% component_id 'lists' card.candidate %}"
+                        hx-trigger="click once"
+                        @click="listsOpen = true">
+                  {% include "app/icons/list-add.svg" with classes="w-4 h-4" %}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-3">
+            <a href="{{ card.details_url }}"
+               class="block text-sm font-semibold text-[var(--color-text)] transition hover:text-[var(--color-link)]">
+              <span class="line-clamp-2">{{ card.title }}</span>
+            </a>
+            <div class="mt-1 flex items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
+              <span>{% if card.year %}{{ card.year }}{% else %}{% translate "Year unknown" %}{% endif %}</span>
+              {% if card.rating is not None %}<span>★ {{ card.rating|floatformat:1 }}</span>{% endif %}
+            </div>
+            {% if card.genres %}
+              <p class="mt-1 truncate text-[11px] text-[var(--color-text-muted)]">{{ card.genres|join:", " }}</p>
+            {% endif %}
+          </div>
+
+          <div x-show="listsOpen"
+               x-cloak
+               @keydown.escape.window="listsOpen = false"
+               class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <div class="relative z-60 max-h-[90vh] w-96 max-w-[calc(100vw-2rem)]"
+                 @click.outside="listsOpen = false">
+              <div id="{% component_id 'lists' card.candidate %}"></div>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="rounded-lg border border-dashed border-[var(--color-surface-border)] p-5 text-center text-sm text-[var(--color-text-muted)]">{{ empty_message }}</div>
+  {% endif %}
+
+  {% if has_previous or has_next %}
+    <nav class="mt-4 flex items-center justify-center gap-3"
+         aria-label="{{ explore_title }} pagination">
+      {% if has_previous %}
+        <button type="button"
+                hx-get="{{ previous_url }}"
+                hx-target="#{{ explore_target_id }}"
+                hx-swap="innerHTML"
+                hx-indicator="#{{ explore_id_prefix }}-loading"
+                class="rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm font-semibold text-[var(--color-text)] hover:bg-[var(--color-surface-strong)] cursor-pointer">{% translate "Previous" %}</button>
+      {% endif %}
+      <span class="text-sm text-[var(--color-text-muted)]">{% blocktranslate trimmed with value_1=chunk %}Page {{ value_1 }}{% endblocktranslate %}</span>
+      {% if has_next %}
+        <button type="button"
+                hx-get="{{ next_url }}"
+                hx-target="#{{ explore_target_id }}"
+                hx-swap="innerHTML"
+                hx-indicator="#{{ explore_id_prefix }}-loading"
+                class="rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-page-bg)] px-3 py-2 text-sm font-semibold text-[var(--color-text)] hover:bg-[var(--color-surface-strong)] cursor-pointer">{% translate "Next" %}</button>
+      {% endif %}
+    </nav>
+  {% endif %}
+</section>
