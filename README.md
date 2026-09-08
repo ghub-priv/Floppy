@@ -2,7 +2,7 @@
 
 This repository is our working fork of [dannyvfilms/Floppy](https://github.com/dannyvfilms/Floppy).
 
-The goal is not to maintain a pile of runtime monkey-patches forever. We are taking a known-good customised Floppy installation, based on the **2026.09.06 r13 patch baseline**, and moving those changes into the actual Floppy source tree one feature at a time.
+The goal is not to maintain a pile of runtime monkey-patches forever. We are taking a known-good customised Floppy installation, based on my local cumulative **2026.09.06 r13 patch baseline**, and moving those changes into the actual Floppy source tree one feature at a time.
 
 The end state should be a normal, maintainable source build of Floppy in which our custom behaviour is implemented cleanly, tested against the current codebase and no longer depends on replacing files inside a running container.
 
