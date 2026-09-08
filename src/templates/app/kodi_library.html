@@ -9,63 +9,64 @@
     <div>
       <div class="flex flex-wrap items-center gap-2">
         <h1 class="text-3xl font-bold text-[var(--color-text)]">{% translate "Kodi Library Awareness" %}</h1>
-        <span class="rounded-full border border-[var(--color-border)] px-2.5 py-1 text-xs font-semibold text-[var(--color-text-muted)]">
-          v{{ patch_version }}
-        </span>
-        <span class="rounded-full border border-[var(--color-border)] bg-[var(--color-hover-dim)] px-2.5 py-1 text-xs font-semibold text-[var(--color-text-secondary)]">
-          {% translate "Read only" %}
-        </span>
+        <span class="rounded-full border border-[var(--color-border)] px-2.5 py-1 text-xs font-semibold text-[var(--color-text-muted)]">v{{ patch_version }}</span>
+        <span class="rounded-full border border-[var(--color-border)] bg-[var(--color-hover-dim)] px-2.5 py-1 text-xs font-semibold text-[var(--color-text-secondary)]">{% translate "Read only" %}</span>
       </div>
       <p class="mt-2 max-w-3xl text-sm text-[var(--color-text-muted)]">
         {% translate "Compares Kodi's video library with Floppy using external IDs first and conservative fallbacks second. This page never scans, cleans, updates or changes watched state in Kodi or Floppy." %}
       </p>
-      {% if snapshot.refreshed_at %}
-        <p class="mt-1 text-xs text-[var(--color-text-muted)]">
-          {% translate "Snapshot refreshed" %}: {{ snapshot.refreshed_at }}
-        </p>
-      {% endif %}
+      {% if snapshot.refreshed_at %}<p class="mt-1 text-xs text-[var(--color-text-muted)]">{% translate "Snapshot refreshed" %}: {{ snapshot.refreshed_at }}</p>{% endif %}
     </div>
-
     <form method="post" action="{% url 'kodi_library' %}" class="shrink-0">
       {% csrf_token %}
-      <button type="submit"
-              class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-sm font-semibold text-[var(--color-text)] transition-colors hover:bg-[var(--color-hover-dim)]">
-        {% translate "Refresh Kodi snapshot" %}
-      </button>
+      <button type="submit" class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-sm font-semibold text-[var(--color-text)] transition-colors hover:bg-[var(--color-hover-dim)]">{% translate "Refresh Kodi snapshot" %}</button>
     </form>
   </div>
 
   {% if error %}
     <div class="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
       <strong>{% translate "Kodi refresh failed" %}:</strong> {{ error }}
-      {% if snapshot %}
-        <div class="mt-1 text-xs opacity-80">{% translate "The last cached snapshot is shown below." %}</div>
-      {% endif %}
+      {% if snapshot %}<div class="mt-1 text-xs opacity-80">{% translate "The last cached snapshot is shown below." %}</div>{% endif %}
     </div>
   {% endif %}
 
   {% if snapshot %}
     <div class="grid gap-4 md:grid-cols-3">
-      {% for key, label in summary_types %}
-        {% with summary=snapshot.summary|get_item:key %}
-          <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
-            <div class="text-sm font-semibold text-[var(--color-text-secondary)]">{{ label }}</div>
-            <div class="mt-2 flex items-end justify-between gap-3">
-              <div>
-                <div class="text-3xl font-bold text-[var(--color-text)]">{{ summary.matched|default:0 }}/{{ summary.total|default:0 }}</div>
-                <div class="text-xs text-[var(--color-text-muted)]">{% translate "matched" %}</div>
-              </div>
-              <div class="text-right text-xs leading-5 text-[var(--color-text-muted)]">
-                {% if summary.exact %}<div>{{ summary.exact }} {% translate "exact" %}</div>{% endif %}
-                {% if summary.strong %}<div>{{ summary.strong }} {% translate "strong" %}</div>{% endif %}
-                {% if summary.fallback %}<div>{{ summary.fallback }} {% translate "fallback" %}</div>{% endif %}
-                {% if summary.ambiguous %}<div>{{ summary.ambiguous }} {% translate "ambiguous" %}</div>{% endif %}
-                {% if summary.unresolved %}<div>{{ summary.unresolved }} {% translate "unresolved" %}</div>{% endif %}
-              </div>
-            </div>
-          </section>
-        {% endwith %}
-      {% endfor %}
+      <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+        <div class="text-sm font-semibold text-[var(--color-text-secondary)]">{% translate "Movies" %}</div>
+        <div class="mt-2 flex items-end justify-between gap-3">
+          <div><div class="text-3xl font-bold text-[var(--color-text)]">{{ snapshot.summary.movie.matched|default:0 }}/{{ snapshot.summary.movie.total|default:0 }}</div><div class="text-xs text-[var(--color-text-muted)]">{% translate "matched" %}</div></div>
+          <div class="text-right text-xs leading-5 text-[var(--color-text-muted)]">
+            {% if snapshot.summary.movie.exact %}<div>{{ snapshot.summary.movie.exact }} {% translate "exact" %}</div>{% endif %}
+            {% if snapshot.summary.movie.fallback %}<div>{{ snapshot.summary.movie.fallback }} {% translate "fallback" %}</div>{% endif %}
+            {% if snapshot.summary.movie.ambiguous %}<div>{{ snapshot.summary.movie.ambiguous }} {% translate "ambiguous" %}</div>{% endif %}
+            {% if snapshot.summary.movie.unresolved %}<div>{{ snapshot.summary.movie.unresolved }} {% translate "unresolved" %}</div>{% endif %}
+          </div>
+        </div>
+      </section>
+      <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+        <div class="text-sm font-semibold text-[var(--color-text-secondary)]">{% translate "TV Shows" %}</div>
+        <div class="mt-2 flex items-end justify-between gap-3">
+          <div><div class="text-3xl font-bold text-[var(--color-text)]">{{ snapshot.summary.tv.matched|default:0 }}/{{ snapshot.summary.tv.total|default:0 }}</div><div class="text-xs text-[var(--color-text-muted)]">{% translate "matched" %}</div></div>
+          <div class="text-right text-xs leading-5 text-[var(--color-text-muted)]">
+            {% if snapshot.summary.tv.exact %}<div>{{ snapshot.summary.tv.exact }} {% translate "exact" %}</div>{% endif %}
+            {% if snapshot.summary.tv.fallback %}<div>{{ snapshot.summary.tv.fallback }} {% translate "fallback" %}</div>{% endif %}
+            {% if snapshot.summary.tv.ambiguous %}<div>{{ snapshot.summary.tv.ambiguous }} {% translate "ambiguous" %}</div>{% endif %}
+            {% if snapshot.summary.tv.unresolved %}<div>{{ snapshot.summary.tv.unresolved }} {% translate "unresolved" %}</div>{% endif %}
+          </div>
+        </div>
+      </section>
+      <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+        <div class="text-sm font-semibold text-[var(--color-text-secondary)]">{% translate "Episodes" %}</div>
+        <div class="mt-2 flex items-end justify-between gap-3">
+          <div><div class="text-3xl font-bold text-[var(--color-text)]">{{ snapshot.summary.episode.matched|default:0 }}/{{ snapshot.summary.episode.total|default:0 }}</div><div class="text-xs text-[var(--color-text-muted)]">{% translate "matched" %}</div></div>
+          <div class="text-right text-xs leading-5 text-[var(--color-text-muted)]">
+            {% if snapshot.summary.episode.strong %}<div>{{ snapshot.summary.episode.strong }} {% translate "strong" %}</div>{% endif %}
+            {% if snapshot.summary.episode.ambiguous %}<div>{{ snapshot.summary.episode.ambiguous }} {% translate "ambiguous" %}</div>{% endif %}
+            {% if snapshot.summary.episode.unresolved %}<div>{{ snapshot.summary.episode.unresolved }} {% translate "unresolved" %}</div>{% endif %}
+          </div>
+        </div>
+      </section>
     </div>
 
     <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
@@ -73,27 +74,13 @@
         <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h2 class="text-xl font-bold text-[var(--color-text)]">{% translate "Review queue" %}</h2>
-            <p class="mt-1 text-sm text-[var(--color-text-muted)]">
-              {% translate "Fallback, ambiguous and unresolved matches are surfaced here for inspection. Nothing is changed automatically." %}
-            </p>
+            <p class="mt-1 text-sm text-[var(--color-text-muted)]">{% translate "Fallback, ambiguous and unresolved matches are surfaced here for inspection. Nothing is changed automatically." %}</p>
           </div>
           <div class="flex flex-wrap gap-2 text-sm">
-            <a href="{% url 'kodi_library' %}?review_type=all"
-               class="rounded-md border px-3 py-1.5 {% if review_filter == 'all' %}border-[var(--color-link)] text-[var(--color-link)]{% else %}border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]{% endif %}">
-              {% translate "All" %} ({{ review_counts.all }})
-            </a>
-            <a href="{% url 'kodi_library' %}?review_type=movie"
-               class="rounded-md border px-3 py-1.5 {% if review_filter == 'movie' %}border-[var(--color-link)] text-[var(--color-link)]{% else %}border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]{% endif %}">
-              {% translate "Movies" %} ({{ review_counts.movie }})
-            </a>
-            <a href="{% url 'kodi_library' %}?review_type=tv"
-               class="rounded-md border px-3 py-1.5 {% if review_filter == 'tv' %}border-[var(--color-link)] text-[var(--color-link)]{% else %}border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]{% endif %}">
-              {% translate "TV" %} ({{ review_counts.tv }})
-            </a>
-            <a href="{% url 'kodi_library' %}?review_type=episode"
-               class="rounded-md border px-3 py-1.5 {% if review_filter == 'episode' %}border-[var(--color-link)] text-[var(--color-link)]{% else %}border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]{% endif %}">
-              {% translate "Episodes" %} ({{ review_counts.episode }})
-            </a>
+            <a href="{% url 'kodi_library' %}?review_type=all" class="rounded-md border px-3 py-1.5 {% if review_filter == 'all' %}border-[var(--color-link)] text-[var(--color-link)]{% else %}border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]{% endif %}">{% translate "All" %} ({{ review_counts.all }})</a>
+            <a href="{% url 'kodi_library' %}?review_type=movie" class="rounded-md border px-3 py-1.5 {% if review_filter == 'movie' %}border-[var(--color-link)] text-[var(--color-link)]{% else %}border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]{% endif %}">{% translate "Movies" %} ({{ review_counts.movie }})</a>
+            <a href="{% url 'kodi_library' %}?review_type=tv" class="rounded-md border px-3 py-1.5 {% if review_filter == 'tv' %}border-[var(--color-link)] text-[var(--color-link)]{% else %}border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]{% endif %}">{% translate "TV" %} ({{ review_counts.tv }})</a>
+            <a href="{% url 'kodi_library' %}?review_type=episode" class="rounded-md border px-3 py-1.5 {% if review_filter == 'episode' %}border-[var(--color-link)] text-[var(--color-link)]{% else %}border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]{% endif %}">{% translate "Episodes" %} ({{ review_counts.episode }})</a>
           </div>
         </div>
       </div>
@@ -102,63 +89,33 @@
         <div class="overflow-x-auto">
           <table class="min-w-full text-left text-sm">
             <thead class="border-b border-[var(--color-border)] text-xs uppercase tracking-wide text-[var(--color-text-muted)]">
-              <tr>
-                <th class="px-5 py-3">{% translate "Kodi item" %}</th>
-                <th class="px-5 py-3">{% translate "Type" %}</th>
-                <th class="px-5 py-3">{% translate "Match" %}</th>
-                <th class="px-5 py-3">{% translate "Method" %}</th>
-                <th class="px-5 py-3">{% translate "Diagnosis" %}</th>
-              </tr>
+              <tr><th class="px-5 py-3">{% translate "Kodi item" %}</th><th class="px-5 py-3">{% translate "Type" %}</th><th class="px-5 py-3">{% translate "Match" %}</th><th class="px-5 py-3">{% translate "Method" %}</th><th class="px-5 py-3">{% translate "Diagnosis" %}</th></tr>
             </thead>
             <tbody class="divide-y divide-[var(--color-border)]">
               {% for row in review_rows %}
                 <tr class="align-top">
                   <td class="px-5 py-4">
-                    <div class="font-semibold text-[var(--color-text)]">
-                      {% if row.kind == "episode" and row.showtitle %}{{ row.showtitle }} — {% endif %}{{ row.title|default:"Untitled" }}
-                    </div>
+                    <div class="font-semibold text-[var(--color-text)]">{% if row.kind == "episode" and row.showtitle %}{{ row.showtitle }} — {% endif %}{{ row.title|default:"Untitled" }}</div>
                     <div class="mt-1 text-xs text-[var(--color-text-muted)]">
-                      {% if row.kind == "episode" %}
-                        S{{ row.season|stringformat:"02d" }}E{{ row.episode|stringformat:"02d" }}
-                      {% elif row.year %}
-                        {{ row.year }}
-                      {% endif %}
-                      {% if row.kodi_id %} · Kodi ID {{ row.kodi_id }}{% endif %}
+                      {% if row.kind == "episode" %}S{{ row.season|stringformat:"02d" }}E{{ row.episode|stringformat:"02d" }}{% elif row.year %}{{ row.year }}{% endif %}{% if row.kodi_id %} · Kodi ID {{ row.kodi_id }}{% endif %}
                     </div>
                   </td>
                   <td class="px-5 py-4 text-[var(--color-text-secondary)]">{{ row.kind }}</td>
-                  <td class="px-5 py-4">
-                    <span class="rounded-full border border-[var(--color-border)] px-2 py-1 text-xs font-semibold text-[var(--color-text-secondary)]">
-                      {{ row.confidence|default:"unresolved" }}
-                    </span>
-                  </td>
+                  <td class="px-5 py-4"><span class="rounded-full border border-[var(--color-border)] px-2 py-1 text-xs font-semibold text-[var(--color-text-secondary)]">{{ row.confidence|default:"unresolved" }}</span></td>
                   <td class="px-5 py-4 text-[var(--color-text-secondary)]">{{ row.method|default:"none" }}</td>
-                  <td class="px-5 py-4 text-[var(--color-text-secondary)]">
-                    {{ row.diagnosis|default:"-" }}
-                    {% if row.candidate_count %}
-                      <div class="mt-1 text-xs text-[var(--color-text-muted)]">{{ row.candidate_count }} {% translate "candidates" %}</div>
-                    {% endif %}
-                  </td>
+                  <td class="px-5 py-4 text-[var(--color-text-secondary)]">{{ row.diagnosis|default:"-" }}{% if row.candidate_count %}<div class="mt-1 text-xs text-[var(--color-text-muted)]">{{ row.candidate_count }} {% translate "candidates" %}</div>{% endif %}</td>
                 </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
-        {% if review_rows_total > review_rows_displayed %}
-          <div class="border-t border-[var(--color-border)] px-5 py-3 text-xs text-[var(--color-text-muted)]">
-            {% blocktranslate with displayed=review_rows_displayed total=review_rows_total %}Showing {{ displayed }} of {{ total }} review rows in this diagnostic snapshot.{% endblocktranslate %}
-          </div>
-        {% endif %}
+        {% if review_rows_total > review_rows_displayed %}<div class="border-t border-[var(--color-border)] px-5 py-3 text-xs text-[var(--color-text-muted)]">{% blocktranslate with displayed=review_rows_displayed total=review_rows_total %}Showing {{ displayed }} of {{ total }} review rows in this diagnostic snapshot.{% endblocktranslate %}</div>{% endif %}
       {% else %}
-        <div class="p-8 text-center text-sm text-[var(--color-text-muted)]">
-          {% translate "No items in this review category." %}
-        </div>
+        <div class="p-8 text-center text-sm text-[var(--color-text-muted)]">{% translate "No items in this review category." %}</div>
       {% endif %}
     </section>
   {% elif not error %}
-    <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-8 text-center text-sm text-[var(--color-text-muted)]">
-      {% translate "No Kodi library snapshot is available yet." %}
-    </div>
+    <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-8 text-center text-sm text-[var(--color-text-muted)]">{% translate "No Kodi library snapshot is available yet." %}</div>
   {% endif %}
 </div>
 {% endblock content %}
