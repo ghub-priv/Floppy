@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+from itertools import count
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,19 +9,37 @@ from django.test import RequestFactory
 from django.utils import timezone
 
 from app import post_watch
-from app.models import Episode, Item, MediaTypes, Movie, MoviePlay, PostWatchDismissal, Season, Sources, TV
+from app.models import (
+    Episode,
+    Item,
+    MediaTypes,
+    Movie,
+    MoviePlay,
+    PostWatchDismissal,
+    Season,
+    Sources,
+    TV,
+)
 
 
 pytestmark = pytest.mark.django_db
+_media_ids = count(1000)
 
 
 def _user(username="post-watch-user"):
-    return get_user_model().objects.create_user(username=username, password="test-password")
+    return get_user_model().objects.create_user(
+        username=username,
+        password="test-password",
+    )
+
+
+def _next_media_id():
+    return str(next(_media_ids))
 
 
 def _item(**overrides):
     values = {
-        "media_id": "123",
+        "media_id": _next_media_id(),
         "source": Sources.TMDB.value,
         "media_type": MediaTypes.MOVIE.value,
         "library_media_type": MediaTypes.MOVIE.value,
@@ -30,8 +49,8 @@ def _item(**overrides):
     return Item.objects.create(**values)
 
 
-def _movie_watch(user, *, watched_at=None, score=None):
-    item = _item()
+def _movie_watch(user, *, watched_at=None, score=None, release_datetime=None):
+    item = _item(release_datetime=release_datetime)
     movie = Movie(item=item, user=user, status=None, score=score)
     Movie.save_base(movie, force_insert=True)
     play = MoviePlay.objects.create(
@@ -43,8 +62,17 @@ def _movie_watch(user, *, watched_at=None, score=None):
     return movie, play
 
 
-def _episode_watch(user, *, watched_at=None, score=None, episode_number=1):
+def _episode_watch(
+    user,
+    *,
+    watched_at=None,
+    score=None,
+    episode_number=1,
+    release_datetime=None,
+):
+    show_media_id = _next_media_id()
     tv_item = _item(
+        media_id=show_media_id,
         media_type=MediaTypes.TV.value,
         library_media_type=MediaTypes.TV.value,
         title="Example Show",
@@ -53,8 +81,9 @@ def _episode_watch(user, *, watched_at=None, score=None, episode_number=1):
     TV.save_base(tv, force_insert=True)
 
     season_item = _item(
+        media_id=show_media_id,
         media_type=MediaTypes.SEASON.value,
-        library_media_type=MediaTypes.SEASON.value,
+        library_media_type=MediaTypes.TV.value,
         title="Example Show",
         season_number=1,
     )
@@ -62,11 +91,13 @@ def _episode_watch(user, *, watched_at=None, score=None, episode_number=1):
     Season.save_base(season, force_insert=True)
 
     episode_item = _item(
+        media_id=show_media_id,
         media_type=MediaTypes.EPISODE.value,
         library_media_type=MediaTypes.TV.value,
         title=f"Episode {episode_number}",
         season_number=1,
         episode_number=episode_number,
+        release_datetime=release_datetime,
     )
     episode = Episode(
         item=episode_item,
@@ -94,9 +125,18 @@ def test_watch_key_parser_is_strict():
 def test_managed_dismissal_is_user_scoped_and_unique():
     user = _user()
     other = _user("other-post-watch-user")
-    first, created = PostWatchDismissal.objects.get_or_create(user=user, watch_key="movie:1")
-    duplicate, created_again = PostWatchDismissal.objects.get_or_create(user=user, watch_key="movie:1")
-    other_row = PostWatchDismissal.objects.create(user=other, watch_key="movie:1")
+    first, created = PostWatchDismissal.objects.get_or_create(
+        user=user,
+        watch_key="movie:1",
+    )
+    duplicate, created_again = PostWatchDismissal.objects.get_or_create(
+        user=user,
+        watch_key="movie:1",
+    )
+    other_row = PostWatchDismissal.objects.create(
+        user=other,
+        watch_key="movie:1",
+    )
 
     assert first.pk == duplicate.pk
     assert created is True
@@ -121,7 +161,10 @@ def test_rated_old_and_dismissed_movie_watches_are_not_in_queue(monkeypatch):
     _movie_watch(user, score=Decimal("8.0"))
     _movie_watch(user, watched_at=timezone.now() - timedelta(days=8))
     _movie, dismissed_play = _movie_watch(user)
-    PostWatchDismissal.objects.create(user=user, watch_key=f"movie:{dismissed_play.pk}")
+    PostWatchDismissal.objects.create(
+        user=user,
+        watch_key=f"movie:{dismissed_play.pk}",
+    )
     monkeypatch.setattr(post_watch, "_movie_date_suggestions", lambda *_args: [])
 
     assert post_watch.build_post_watch_cards(user) == []
@@ -142,7 +185,11 @@ def test_dismiss_endpoint_rejects_another_users_watch():
     owner = _user("owner")
     attacker = _user("attacker")
     _movie, play = _movie_watch(owner)
-    request = _post_request(attacker, "/post-watch/dismiss/", {"watch_key": f"movie:{play.pk}"})
+    request = _post_request(
+        attacker,
+        "/post-watch/dismiss/",
+        {"watch_key": f"movie:{play.pk}"},
+    )
 
     response = post_watch.post_watch_dismiss(request)
 
@@ -153,12 +200,19 @@ def test_dismiss_endpoint_rejects_another_users_watch():
 def test_dismiss_endpoint_persists_exact_watch():
     user = _user()
     _movie, play = _movie_watch(user)
-    request = _post_request(user, "/post-watch/dismiss/", {"watch_key": f"movie:{play.pk}"})
+    request = _post_request(
+        user,
+        "/post-watch/dismiss/",
+        {"watch_key": f"movie:{play.pk}"},
+    )
 
     response = post_watch.post_watch_dismiss(request)
 
     assert response.status_code == 302
-    assert PostWatchDismissal.objects.filter(user=user, watch_key=f"movie:{play.pk}").exists()
+    assert PostWatchDismissal.objects.filter(
+        user=user,
+        watch_key=f"movie:{play.pk}",
+    ).exists()
 
 
 def test_movie_rating_uses_user_scale_and_removes_item_from_queue(monkeypatch):
@@ -189,7 +243,11 @@ def test_episode_rating_updates_all_plays_for_same_episode(monkeypatch):
         score=None,
     )
     Episode.save_base(repeat, force_insert=True)
-    monkeypatch.setattr(post_watch.history_cache, "invalidate_history_days", MagicMock())
+    monkeypatch.setattr(
+        post_watch.history_cache,
+        "invalidate_history_days",
+        MagicMock(),
+    )
     request = _post_request(
         user,
         "/post-watch/rate/",
@@ -199,8 +257,10 @@ def test_episode_rating_updates_all_plays_for_same_episode(monkeypatch):
     response = post_watch.post_watch_rate(request)
 
     scores = set(
-        Episode.objects.filter(related_season=season, item__episode_number=1)
-        .values_list("score", flat=True)
+        Episode.objects.filter(
+            related_season=season,
+            item__episode_number=1,
+        ).values_list("score", flat=True)
     )
     assert response.status_code == 302
     assert scores == {Decimal("7.0")}
@@ -208,17 +268,27 @@ def test_episode_rating_updates_all_plays_for_same_episode(monkeypatch):
 
 def test_movie_date_edit_updates_exact_play_and_parent_last_watched(monkeypatch):
     user = _user()
-    movie, older = _movie_watch(user, watched_at=timezone.now() - timedelta(days=2))
-    newer = MoviePlay.objects.create(movie=movie, end_date=timezone.now() - timedelta(days=1))
+    movie, older = _movie_watch(
+        user,
+        watched_at=timezone.now() - timedelta(days=2),
+    )
+    newer = MoviePlay.objects.create(
+        movie=movie,
+        end_date=timezone.now() - timedelta(days=1),
+    )
     Movie.objects.filter(pk=movie.pk).update(end_date=newer.end_date)
-    monkeypatch.setattr(post_watch.history_cache, "invalidate_history_days", MagicMock())
+    monkeypatch.setattr(
+        post_watch.history_cache,
+        "invalidate_history_days",
+        MagicMock(),
+    )
     request = _post_request(
         user,
         "/post-watch/date/",
         {"watch_key": f"movie:{newer.pk}", "watched_date": "2020-01-02"},
     )
 
-    response = post_watch.post_watch_date(request)
+    response = post_watch.post_watch_update_date(request)
 
     newer.refresh_from_db()
     movie.refresh_from_db()
@@ -237,14 +307,18 @@ def test_episode_date_edit_updates_only_selected_play(monkeypatch):
     )
     Episode.save_base(repeat, force_insert=True)
     repeat_original = repeat.end_date
-    monkeypatch.setattr(post_watch.history_cache, "invalidate_history_days", MagicMock())
+    monkeypatch.setattr(
+        post_watch.history_cache,
+        "invalidate_history_days",
+        MagicMock(),
+    )
     request = _post_request(
         user,
         "/post-watch/date/",
         {"watch_key": f"episode:{episode.pk}", "watched_date": "2020-01-03"},
     )
 
-    response = post_watch.post_watch_date(request)
+    response = post_watch.post_watch_update_date(request)
 
     episode.refresh_from_db()
     repeat.refresh_from_db()
@@ -266,10 +340,54 @@ def test_movie_suggestions_delegate_to_smart_watched_dates(monkeypatch):
     )
     monkeypatch.setattr(post_watch, "suggestions_for_media", resolver)
 
-    result = post_watch._movie_date_suggestions(user, movie)
+    result = post_watch._movie_date_suggestions(movie, user)
 
-    assert [row["kind"] for row in result] == ["premiere", "theatrical", "physical"]
+    assert [row["kind"] for row in result] == [
+        "premiere",
+        "theatrical",
+        "physical",
+    ]
+    assert [row["label"] for row in result] == [
+        "Premiere",
+        "First Theatrical Release",
+        "Physical Release",
+    ]
     resolver.assert_called_once()
+
+
+def test_movie_suggestions_include_persisted_release_date(monkeypatch):
+    user = _user()
+    release_datetime = timezone.now() - timedelta(days=30)
+    movie, _play = _movie_watch(
+        user,
+        release_datetime=release_datetime,
+    )
+    monkeypatch.setattr(post_watch, "suggestions_for_media", MagicMock(return_value={}))
+
+    result = post_watch._movie_date_suggestions(movie, user)
+
+    assert result[0] == {
+        "kind": "release",
+        "label": "Release Date",
+        "date": timezone.localdate(release_datetime).isoformat(),
+    }
+
+
+def test_episode_suggestions_include_air_date():
+    user = _user()
+    air_date = timezone.now() - timedelta(days=14)
+    _tv, _season, episode = _episode_watch(
+        user,
+        release_datetime=air_date,
+    )
+
+    assert post_watch._episode_date_suggestions(episode) == [
+        {
+            "kind": "air",
+            "label": "Air Date",
+            "date": timezone.localdate(air_date).isoformat(),
+        }
+    ]
 
 
 def test_next_episode_prefers_known_same_season_item():
