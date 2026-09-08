@@ -20,8 +20,8 @@ from app.services.completion import select_preferred_activity_entry
 logger = logging.getLogger(__name__)
 
 PERCENT_COMPLETE_THRESHOLD = 80
-MIN_RATING = Decimal("0")
-MAX_RATING = Decimal("10")
+MIN_RATING = Decimal(0)
+MAX_RATING = Decimal(10)
 
 
 class KodiEvent(StrEnum):
