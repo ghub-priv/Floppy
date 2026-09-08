@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import random
 import secrets
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from django.urls import reverse
 from django.utils.text import slugify
 
 from app.discover.schemas import CandidateItem
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 EXPLORE_RESULTS_PER_CHUNK = 60
 EXPLORE_MAX_PROVIDER_PAGE = 500
 RANDOM_SEED_LIMIT = 2_147_483_647
 RANDOM_PAGE_SALT = 1_000_003
+RELEASE_YEAR_DIGITS = 4
 
 DEFAULT_SORT_OPTIONS = (
     ("popular", "Most popular"),
@@ -70,7 +73,7 @@ class ProviderExploreConfig:
 
 
 def safe_int(value: str | None, *, default: int | None = None) -> int | None:
-    """Parse an integer without allowing bad query strings to fail the view."""
+    """Parse an integer without allowing a bad query string to fail the view."""
     try:
         return int(value) if value not in (None, "") else default
     except (TypeError, ValueError):
@@ -78,7 +81,7 @@ def safe_int(value: str | None, *, default: int | None = None) -> int | None:
 
 
 def safe_float(value: str | None) -> float | None:
-    """Parse a float without allowing bad query strings to fail the view."""
+    """Parse a float without allowing a bad query string to fail the view."""
     try:
         return float(value) if value not in (None, "") else None
     except (TypeError, ValueError):
@@ -223,13 +226,11 @@ def candidate_matches_genres(
     candidate_genres = {str(value).casefold() for value in (candidate.genres or [])}
     if include_genres and not include_genres.issubset(candidate_genres):
         return False
-    if exclude_genres and candidate_genres & exclude_genres:
-        return False
-    return True
+    return not (exclude_genres and candidate_genres & exclude_genres)
 
 
 def candidate_from_library_item(item, *, row_key: str) -> CandidateItem:
-    """Normalize a locally tracked Item into a Discover candidate."""
+    """Normalise a locally tracked Item into a Discover candidate."""
     release_date = (
         item.release_datetime.date().isoformat() if item.release_datetime else None
     )
@@ -287,16 +288,16 @@ def library_item_matches(
     if exclude_genres and item_genres & exclude_genres:
         return False
 
-    release_year = item.release_datetime.year if item.release_datetime else None
+    item_release_year = item.release_datetime.year if item.release_datetime else None
     if from_year is not None or to_year is not None:
-        if release_year is None:
+        if item_release_year is None:
             return False
-        if from_year is not None and release_year < from_year:
+        if from_year is not None and item_release_year < from_year:
             return False
-        if to_year is not None and release_year > to_year:
+        if to_year is not None and item_release_year > to_year:
             return False
     elif decade is not None and (
-        release_year is None or not decade <= release_year <= decade + 9
+        item_release_year is None or not decade <= item_release_year <= decade + 9
     ):
         return False
 
@@ -311,9 +312,7 @@ def library_item_matches(
     runtime = item.runtime_minutes
     if runtime_min is not None and (runtime is None or runtime < runtime_min):
         return False
-    if runtime_max is not None and (runtime is None or runtime > runtime_max):
-        return False
-    return True
+    return runtime_max is None or (runtime is not None and runtime <= runtime_max)
 
 
 def sort_library_candidates(
@@ -378,7 +377,12 @@ def release_year(release_date: str | None) -> str:
     if not release_date:
         return ""
     value = str(release_date)
-    return value[:4] if len(value) >= 4 and value[:4].isdigit() else ""
+    return (
+        value[:RELEASE_YEAR_DIGITS]
+        if len(value) >= RELEASE_YEAR_DIGITS
+        and value[:RELEASE_YEAR_DIGITS].isdigit()
+        else ""
+    )
 
 
 def details_url(candidate: CandidateItem) -> str:
@@ -504,7 +508,7 @@ def fetch_provider_candidates(
         today=today,
         provider_filter_params=provider_filter_params,
     )
-    probe = adapter._cache_request(  # noqa: SLF001 - same Discover provider package
+    probe = adapter._cache_request(
         config.endpoint,
         {**params, "page": 1},
         ttl_seconds=ttl_seconds,
@@ -514,15 +518,12 @@ def fetch_provider_candidates(
         int(probe.get("total_pages") or 0),
         config.max_provider_page,
     )
-
     if provider_total_pages <= 0:
         return [], provider_total_results, False, False
 
     provider_pages = list(range(1, provider_total_pages + 1))
     if state.sort_key == "random" or state.surprise_mode:
-        random.Random(state.seed).shuffle(  # noqa: S311 - deterministic UI order
-            provider_pages
-        )
+        random.Random(state.seed).shuffle(provider_pages)  # noqa: S311 - deterministic UI order
 
     if state.surprise_mode:
         desired_start = 0
@@ -541,7 +542,7 @@ def fetch_provider_candidates(
         payload = (
             probe
             if provider_page == 1
-            else adapter._cache_request(  # noqa: SLF001 - same Discover provider package
+            else adapter._cache_request(
                 config.endpoint,
                 {**params, "page": provider_page},
                 ttl_seconds=ttl_seconds,
@@ -551,16 +552,14 @@ def fetch_provider_candidates(
         if not raw_results:
             continue
 
-        normalized = adapter._normalize_results(  # noqa: SLF001 - shared normalizer
+        normalized = adapter._normalize_results(
             config.media_type,
             raw_results,
             row_key=config.row_key,
         )
         if state.sort_key == "random" or state.surprise_mode:
             page_seed = state.seed ^ (provider_page * RANDOM_PAGE_SALT)
-            random.Random(page_seed).shuffle(  # noqa: S311 - deterministic UI order
-                normalized
-            )
+            random.Random(page_seed).shuffle(normalized)  # noqa: S311 - deterministic UI order
 
         for candidate in normalized:
             media_id = str(candidate.media_id)
@@ -592,11 +591,8 @@ def fetch_provider_candidates(
 
     page_end = desired_start + desired_size
     candidates = eligible[desired_start:page_end]
-    has_previous = state.chunk > 1 and bool(
-        candidates or desired_start <= len(eligible)
-    )
+    has_previous = state.chunk > 1 and bool(candidates or desired_start <= len(eligible))
     has_next = len(eligible) > page_end
-
     if exhausted_provider_pages and len(eligible) <= page_end:
         has_next = False
 
