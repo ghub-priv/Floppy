@@ -353,9 +353,8 @@ class KodiRuntimeMixin:
             logger.info("Kodi rating saved as statusless movie: TMDB %s", media_id)
             return
 
-        end_date = movie.end_date
-        Movie.objects.filter(pk=movie.pk).update(score=rating)
-        _invalidate_activity_days(user.id, [end_date])
+        movie.score = rating
+        movie.save(update_fields=["score"])
         logger.info("Kodi rating saved: movie TMDB %s = %s/10", media_id, rating)
 
     def _episode_rating_ids(self, payload, ids):
