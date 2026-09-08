@@ -1,6 +1,7 @@
 {% load app_tags %}
 {% load user_tags %}
 {% load quick_rating %}
+{% load derived_tv_ratings %}
 
 {# quick_rating_overlay_v4_shared_component #}
 {# quick_rating_overlay_v4_0_2_context_safe #}
@@ -114,4 +115,13 @@
       <span class="font-medium">{{ qr.rating_value|score_display:user }}</span>
     </span>
   {% if qr.instance_id %}</span>{% endif %}
+{% endif %}
+
+{% if from_grid %}
+  {% if not public_view|default:False %}
+    {% if qr.media_type == "tv" or qr.media_type == "season" %}
+      {% derived_tv_rating user qr.media_type item as derived_tv_score %}
+      {% include "app/components/derived_tv_rating_card.html" with derived_tv_score=derived_tv_score only %}
+    {% endif %}
+  {% endif %}
 {% endif %}
