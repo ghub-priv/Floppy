@@ -1,49 +1,24 @@
 # Original implementation by sboddy — FuzzyGrim/Yamtrack PR #1506
 import logging
-from enum import StrEnum
 
 from app.models import MediaTypes
 
 from .base import BaseWebhookProcessor
+from .kodi_runtime import (
+    KODI_LIVE_EVENT_MAP,
+    PERCENT_COMPLETE_THRESHOLD,
+    KodiEvent,
+    KodiRuntimeMixin,
+)
 
 logger = logging.getLogger(__name__)
 
-PERCENT_COMPLETE_THRESHOLD = 80
 
-
-class KodiEvent(StrEnum):
-    """Kodi event."""
-
-    PLAYBACK_START = "start"
-    PLAYBACK_STOP = "stop"
-    PLAYBACK_END = "end"
-
-
-class KodiWebhookProcessor(BaseWebhookProcessor):
+class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
     """Processor for Kodi webhook events via the HTTP Scrobbler add-on."""
 
-    def process_payload(self, payload, user):
-        """Return the process payload."""
-        event_type = payload.get("event")
-        if not self._is_supported_event(event_type):
-            logger.debug("Ignoring Kodi webhook event type: %s", event_type)
-            return
-
-        ids = self._extract_external_ids(payload)
-        logger.info("Extracted IDs from Kodi payload: %s", ids)
-
-        if not any(ids.values()):
-            logger.warning("Ignoring Kodi webhook: no external ID found in payload.")
-            return
-
-        self._process_media(payload, user, ids)
-
     def _is_supported_event(self, event_type):
-        return event_type in {
-            KodiEvent.PLAYBACK_START,
-            KodiEvent.PLAYBACK_STOP,
-            KodiEvent.PLAYBACK_END,
-        }
+        return event_type in KODI_LIVE_EVENT_MAP
 
     def _is_played(self, payload):
         if payload.get("event") == KodiEvent.PLAYBACK_END:
@@ -62,6 +37,8 @@ class KodiWebhookProcessor(BaseWebhookProcessor):
             series_name = payload.get("tvShowTitle")
             season_number = payload.get("season")
             episode_number = payload.get("episode")
+            if season_number is None or episode_number is None:
+                return series_name
             return f"{series_name} S{season_number:02d}E{episode_number:02d}"
 
         if self._get_media_type(payload) == MediaTypes.MOVIE.value:
@@ -78,6 +55,9 @@ class KodiWebhookProcessor(BaseWebhookProcessor):
         return payload.get("tvShowTitle")
 
     def _extract_external_ids(self, payload):
+        # Preserve upstream Floppy's episode-first ID behaviour. The Kodi
+        # runtime layer explicitly chooses tvShowUniqueIds only where a show
+        # identity is required for live state or episode-rating resolution.
         episode_ids = payload.get("uniqueIds", {})
         series_ids = payload.get("tvShowUniqueIds", {})
         return {
