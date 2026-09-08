@@ -169,6 +169,52 @@ class KodiWebhookRuntimeTests(SimpleTestCase):
         self.assertEqual(result["tvmaze_id"], "526")
         self.assertEqual(result["tvdb_id"], "123")
 
+    def test_external_ids_tolerate_null_and_non_mapping_payload_values(self):
+        self.assertEqual(
+            self.processor._extract_external_ids(
+                {"uniqueIds": None, "tvShowUniqueIds": "not-a-mapping"}
+            ),
+            {
+                "tmdb_id": None,
+                "imdb_id": None,
+                "tvdb_id": None,
+                "tvmaze_id": None,
+            },
+        )
+
+    def test_tv_title_formats_numeric_string_season_and_episode(self):
+        title = self.processor._get_media_title(
+            {
+                "mediaType": "episode",
+                "tvShowTitle": "Breaking Bad",
+                "season": "2",
+                "episode": "3",
+            }
+        )
+        self.assertEqual(title, "Breaking Bad S02E03")
+
+    def test_stop_completion_accepts_numeric_string_percent(self):
+        self.assertTrue(
+            self.processor._is_played(
+                {"event": "stop", "progress": {"percent": "80.0"}}
+            )
+        )
+        self.assertFalse(
+            self.processor._is_played(
+                {"event": "stop", "progress": {"percent": "79.9"}}
+            )
+        )
+
+    def test_stop_completion_ignores_malformed_progress(self):
+        self.assertFalse(
+            self.processor._is_played({"event": "stop", "progress": "invalid"})
+        )
+        self.assertFalse(
+            self.processor._is_played(
+                {"event": "stop", "progress": {"percent": "invalid"}}
+            )
+        )
+
     @patch("integrations.webhooks.kodi_runtime.mark_kodi_state")
     @patch("integrations.webhooks.kodi_runtime.live_playback.apply_playback_event")
     @patch("integrations.webhooks.kodi_runtime.live_playback.get_user_playback_state")
