@@ -7,6 +7,7 @@ from django.http import HttpResponse, HttpResponseBadRequest
 from django.views.decorators.http import require_POST
 
 from app.kodi_client import KodiClient, KodiError
+from app.kodi_state import is_kodi_state
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +42,12 @@ def _active_video_player(kodi):
 @login_required
 @require_POST
 def kodi_control(request):
-    """Control Kodi without directly mutating Floppy playback state."""
+    """Control the Kodi session represented by Floppy's live playback state."""
     action = (request.POST.get("action") or "").strip().lower()
     if action not in VALID_ACTIONS:
         return HttpResponseBadRequest("Invalid Kodi control action.")
+    if not is_kodi_state(request.user.id):
+        return HttpResponse("No active Kodi playback session.", status=409)
 
     try:
         kodi = KodiClient.from_env()
