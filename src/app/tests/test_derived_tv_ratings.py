@@ -87,7 +87,7 @@ def test_specials_mapping_uses_specials_label(monkeypatch):
     result = derived_tv_ratings.derived_tv_rating(
         _user(),
         MediaTypes.SEASON.value,
-        {"media_id": "123", "source": "tmdb", "season_number": 0},
+        {"media_id": "123", "source": "tmdb", "season_number": "0"},
     )
 
     assert str(result["label"]) == "Specials"
