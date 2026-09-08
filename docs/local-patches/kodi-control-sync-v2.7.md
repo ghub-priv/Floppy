@@ -22,6 +22,8 @@ Floppy's live playback cache is shared by multiple integrations. Kodi-originated
 
 The port uses Floppy's current `PlaybackProgress` store and current provider/anime resolution in `BaseWebhookProcessor`; it does not restore obsolete r13 copies of those subsystems.
 
+Current Floppy also distinguishes episode-level ratings from History-card overrides. A normal episode rating belongs to the episode and is written to all of its replay rows; a History quick-rating intentionally targets one concrete viewing. Kodi/MDBList ratings are episode-level, so the Kodi port updates every matching replay with `QuerySet.update()` while still bypassing `Episode.save()` and its watch-state side effects. This supersedes r13's older "latest watch only" implementation without changing the per-view History quick-rating behaviour.
+
 ## Deployment configuration
 
 Kodi Control + Sync is optional. A blank `KODI_HOST` leaves it unconfigured. The Compose examples pass these host/Compose environment variables into the Floppy container without storing credentials in the repository:
