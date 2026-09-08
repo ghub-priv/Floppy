@@ -63,6 +63,7 @@ urlpatterns = [
     # requests for the same URL and applies the request-scoped display policy.
     path("medialist/<str:media_type>", media_list_with_entry_grouping),
     path("", include("app.smart_watched_dates_urls")),
+    path("", include("app.rapid_rating_urls")),
     path("", include("app.urls")),
     path("", include("integrations.urls")),
     path("", include("users.urls")),
@@ -86,8 +87,6 @@ urlpatterns = [
 
 # Build the accounts URLs
 account_patterns = [
-    # see allauth/account/urls.py
-    # login, logout, signup, account_inactive
     path("login/", allauth_account_views.login, name="account_login"),
     path("logout/", allauth_account_views.logout, name="account_logout"),
     path("signup/", CustomSignupView.as_view(), name="account_signup"),
@@ -96,7 +95,6 @@ account_patterns = [
         allauth_account_views.account_inactive,
         name="account_inactive",
     ),
-    # social account base urls, see allauth/socialaccount/urls.py
     path(
         "3rdparty/",
         include(
@@ -113,7 +111,7 @@ account_patterns = [
                 ),
                 path(
                     "signup/",
-                    CustomSocialSignupView.as_view(),
+                    CustomSocialSignupView.as_view,
                     name="socialaccount_signup",
                 ),
                 path(
@@ -127,18 +125,14 @@ account_patterns = [
     *build_provider_urlpatterns(),
 ]
 
-# Add the accounts URLs to the main urlpatterns
 urlpatterns.append(path("accounts/", include(account_patterns)))
 
 if settings.ADMIN_ENABLED:
     urlpatterns.append(path("admin/", admin.site.urls))
 
-# Add debug toolbar when explicitly enabled for local development
 if settings.ENABLE_DEBUG_TOOLBAR:
     urlpatterns.append(path("__debug__/", include("debug_toolbar.urls")))
 
-# Serve static files for local Django commands like runserver even when
-# DEBUG is disabled in the user's .env.
 if not settings.IS_PROD:
     static_url_pattern = re.escape(settings.STATIC_URL.lstrip("/"))
     urlpatterns.append(
