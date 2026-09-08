@@ -20,6 +20,8 @@ from app.services.completion import select_preferred_activity_entry
 logger = logging.getLogger(__name__)
 
 PERCENT_COMPLETE_THRESHOLD = 80
+MIN_RATING = Decimal("0")
+MAX_RATING = Decimal("10")
 
 
 class KodiEvent(StrEnum):
@@ -277,7 +279,7 @@ class KodiRuntimeMixin:
         except (InvalidOperation, TypeError, ValueError):
             logger.warning("Ignoring invalid Kodi rating: %r", raw_rating)
             return
-        if not rating.is_finite() or rating < 0 or rating > 10:
+        if not rating.is_finite() or rating < MIN_RATING or rating > MAX_RATING:
             logger.warning("Ignoring out-of-range Kodi rating: %r", raw_rating)
             return
         rating = rating.quantize(Decimal("0.1"))
