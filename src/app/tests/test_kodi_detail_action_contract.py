@@ -17,6 +17,6 @@ class KodiDetailActionContractTests(SimpleTestCase):
     def test_episode_action_keeps_oob_tracker_isolated(self):
         template = (TEMPLATES_ROOT / "detail_episode_hero_track_button.html").read_text()
         self.assertIn("if not track_button_oob and source == Sources.TMDB.value", template)
-        self.assertIn("kodi_media_type=\"episode\"", template)
+        self.assertIn('kodi_media_type="episode"', template)
         self.assertIn("kodi_include_season=1", template)
         self.assertIn("kodi_include_episode=1", template)
