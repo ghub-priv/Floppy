@@ -85,7 +85,6 @@ urlpatterns = [
     ),
 ]
 
-# Build the accounts URLs
 account_patterns = [
     path("login/", allauth_account_views.login, name="account_login"),
     path("logout/", allauth_account_views.logout, name="account_logout"),
@@ -111,7 +110,7 @@ account_patterns = [
                 ),
                 path(
                     "signup/",
-                    CustomSocialSignupView.as_view,
+                    CustomSocialSignupView.as_view(),
                     name="socialaccount_signup",
                 ),
                 path(
