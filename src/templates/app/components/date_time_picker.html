@@ -1,5 +1,6 @@
-
 {% load i18n %}
+{% load static %}
+<script src="{% static 'js/smartWatchedDates.js' %}"></script>
 {% translate field_label|default:_("Date") as translated_field_label %}
 {% if copy_from %}
   {% translate copy_from_label|default:copy_from as translated_copy_label %}
@@ -12,6 +13,7 @@
 {% endif %}
 {# djlint:off #}
 <div class="relative flex-1 min-w-0"
+     data-date-time-picker-root
      x-data="dateTimePicker({
        fieldName: '{{ field_name }}',
        trackTime: {{ track_time|yesno:'true,false' }},
@@ -189,6 +191,27 @@
           {% blocktranslate trimmed with value_1=translated_copy_label %}Copy from {{ value_1 }}{% endblocktranslate %}
         </button>
         {% endif %}
+      </div>
+
+      <div x-data="smartWatchedDates({ endpoint: '{% url 'smart_watched_dates' %}' })"
+           x-init="init">
+        <template x-if="suggestions.length">
+          <div class="mt-2">
+            <div class="text-xs text-[var(--color-text-muted)] mb-1">{% translate "Smart suggestions" %}</div>
+            <div class="date-picker-common-times-row">
+              <template x-for="suggestion in suggestions" :key="suggestion.key">
+                <button type="button"
+                        @click="apply(suggestion)"
+                        :title="`${suggestion.label}: ${formatDate(suggestion.date)}`"
+                        class="date-picker-common-time-button">
+                  {% include "app/icons/calendar.svg" with classes="w-3.5 h-3.5" %}
+                  <span x-text="suggestion.label"></span>
+                  <span class="opacity-70" x-text="formatDate(suggestion.date)"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
   </div>
