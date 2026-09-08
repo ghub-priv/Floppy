@@ -2,6 +2,7 @@
 {% load i18n %}
 {% load app_tags %}
 {% load user_tags %}
+{% load derived_music_ratings %}
 {% load humanize %}
 {% load static %}
 
@@ -41,8 +42,11 @@
 
     {% include "app/components/detail_music_album_activity_subtitle.html" with album=album music_album_activity_subtitle=music_album_activity_subtitle user=user only %}
 
-    {% if album_tracker %}
+    {% derived_music_rating user "album" album as derived_music_score %}
+    {% if album_tracker or derived_music_score %}
       <div class="mt-4 mb-5 flex flex-wrap gap-2">
+        {% include "app/components/derived_music_rating.html" with derived_music_score=derived_music_score variant="detail" only %}
+        {% if album_tracker %}
         <div x-data="{ showRatingPopup: false, rating: {{ album_tracker.score|score_display:user|default:'null' }}, ratingScaleMax: {{ user|rating_scale_max }}, hoverRating: null, isHovering: false, formatRating(value) { if (value === null || value === undefined || value === '') { return ''; } return this.ratingScaleMax === 5 ? String(value) + '/5' : String(value); } }"
              class="relative">
           <button type="button"
@@ -89,10 +93,11 @@
             </div>
           </div>
         </div>
+        {% endif %}
       </div>
     {% endif %}
 
-    <div class="{% if not music_album_activity_subtitle and not album_tracker %}mt-5 {% endif %}mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+    <div class="{% if not music_album_activity_subtitle and not album_tracker and not derived_music_score %}mt-5 {% endif %}mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
       <div x-data="{ trackOpen: false }" class="sm:shrink-0">
         <button type="button"
                 class="inline-flex w-full items-center justify-center gap-3 rounded-xl px-5 py-3 text-white shadow-sm transition duration-300 cursor-pointer sm:w-auto {% if detail_primary_action.active %}bg-indigo-600 hover:bg-indigo-700{% else %}bg-gray-600 hover:bg-gray-700{% endif %}"
