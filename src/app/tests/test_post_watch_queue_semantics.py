@@ -1,8 +1,12 @@
 from datetime import timedelta
+from importlib import import_module
 from itertools import count
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 
@@ -18,6 +22,8 @@ from app.models import (
     Sources,
     TV,
 )
+
+post_watch_migration = import_module("app.migrations.0179_postwatchdismissal")
 
 
 class PostWatchQueueSemanticsTests(TestCase):
@@ -162,3 +168,35 @@ class PostWatchQueueSemanticsTests(TestCase):
         card_keys = {card["watch_key"] for card in cards}
         self.assertNotIn(f"episode:{older.pk}", card_keys)
         self.assertNotIn(f"episode:{dropped.pk}", card_keys)
+
+    def test_legacy_movie_without_plays_is_backfilled_for_post_watch(self):
+        movie = self._movie()
+        watched_at = timezone.now() - timedelta(days=2)
+        Movie.objects.filter(pk=movie.pk).update(end_date=watched_at)
+        self.assertFalse(MoviePlay.objects.filter(movie=movie).exists())
+
+        schema_editor = SimpleNamespace(connection=connection)
+        post_watch_migration.backfill_legacy_movie_plays(
+            django_apps,
+            schema_editor,
+        )
+
+        play = MoviePlay.objects.get(movie=movie)
+        movie.refresh_from_db()
+        self.assertEqual(play.end_date, movie.end_date)
+
+    def test_legacy_movie_dismissal_key_translates_to_movie_play_key(self):
+        movie = self._movie()
+        watched_at = timezone.now() - timedelta(days=1)
+        Movie.objects.filter(pk=movie.pk).update(end_date=watched_at)
+        play = MoviePlay.objects.create(movie=movie, end_date=watched_at)
+        legacy_key = f"movie:{movie.pk}:{int(watched_at.timestamp())}"
+
+        translated = post_watch_migration._translate_legacy_watch_key(
+            legacy_key,
+            Movie,
+            MoviePlay,
+            connection.alias,
+        )
+
+        self.assertEqual(translated, f"movie:{play.pk}")
