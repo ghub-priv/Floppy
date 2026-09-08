@@ -64,6 +64,7 @@ urlpatterns = [
     path("medialist/<str:media_type>", media_list_with_entry_grouping),
     path("", include("app.smart_watched_dates_urls")),
     path("", include("app.rapid_rating_urls")),
+    path("", include("app.kodi_library_urls")),
     path("", include("app.urls")),
     path("", include("integrations.urls")),
     path("", include("users.urls")),
