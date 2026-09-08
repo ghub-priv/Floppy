@@ -65,6 +65,7 @@ urlpatterns = [
     path("", include("app.smart_watched_dates_urls")),
     path("", include("app.rapid_rating_urls")),
     path("", include("app.kodi_library_urls")),
+    path("", include("app.post_watch_urls")),
     path("", include("app.urls")),
     path("", include("integrations.urls")),
     path("", include("users.urls")),
