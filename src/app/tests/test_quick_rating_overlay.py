@@ -9,7 +9,7 @@ def _user():
 
 
 def _fake_reverse(name, args):
-    return f"/{name}/{args[0]}"
+    return f"/{name}/" + "/".join(str(value) for value in args)
 
 
 def test_history_music_routes_album_aggregate(monkeypatch):
@@ -86,7 +86,7 @@ def test_standard_media_uses_generic_score_route(monkeypatch):
 
     assert result["enabled"] is True
     assert result["target_kind"] == "standard"
-    assert result["url"] == "/update_media_score/808"
+    assert result["url"] == f"/update_media_score/{MediaTypes.MOVIE.value}/808"
 
 
 def test_podcast_remains_excluded(monkeypatch):
