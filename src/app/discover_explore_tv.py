@@ -27,7 +27,7 @@ from app.discover_explore_core import (
     sort_library_candidates,
     state_url,
 )
-from app.models import MediaTypes, Status, TV
+from app.models import MediaTypes, TV, Status
 
 EXPLORE_MIN_DECADE = 1930
 EXPLORE_MIN_YEAR = 1930
@@ -73,8 +73,8 @@ STATUS_BADGES = {
 RUNTIME_OPTIONS = (
     ("", "Any episode runtime"),
     ("short", "Under 30 min"),
-    ("half", "30–44 min"),
-    ("hour", "45–69 min"),
+    ("half", "30-44 min"),
+    ("hour", "45-69 min"),
     ("long", "70+ min"),
 )
 RUNTIME_RANGES = {
