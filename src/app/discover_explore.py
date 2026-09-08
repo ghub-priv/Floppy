@@ -49,8 +49,8 @@ WATCH_STATUS_LABELS = dict(WATCH_STATUS_OPTIONS)
 RUNTIME_OPTIONS = (
     ("", "Any runtime"),
     ("short", "Under 90 min"),
-    ("standard", "90–120 min"),
-    ("long", "121–150 min"),
+    ("standard", "90-120 min"),
+    ("long", "121-150 min"),
     ("epic", "Over 150 min"),
 )
 RUNTIME_RANGES = {
