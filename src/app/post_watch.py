@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.contrib.auth.decorators import login_required
 from django.db.models import Q
 from django.http import HttpResponseBadRequest
-from django.shortcuts import get_object_or_404, redirect, render
+from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -19,7 +19,15 @@ from django.views.decorators.http import require_GET, require_POST
 from requests import RequestException
 
 from app import history_cache, providers
-from app.models import Episode, Item, MediaTypes, MoviePlay, PostWatchDismissal, Sources
+from app.models import (
+    Episode,
+    Item,
+    MediaTypes,
+    Movie,
+    MoviePlay,
+    PostWatchDismissal,
+    Sources,
+)
 from app.smart_watched_dates import suggestions_for_media
 
 logger = logging.getLogger(__name__)
@@ -110,7 +118,11 @@ def _episode_details_url(episode: Episode, season_number: int, episode_number: i
         if tv.item.library_media_type == MediaTypes.ANIME.value
         else MediaTypes.TV.value
     )
-    route_name = "anime_episode_details" if parent_type == MediaTypes.ANIME.value else "episode_details"
+    route_name = (
+        "anime_episode_details"
+        if parent_type == MediaTypes.ANIME.value
+        else "episode_details"
+    )
     return reverse(
         route_name,
         kwargs={
@@ -131,7 +143,13 @@ def _metadata_episode_numbers(media_id, source, season_number):
             source,
             [season_number],
         )
-    except (providers.services.ProviderAPIError, RequestException, KeyError, TypeError, ValueError):
+    except (
+        providers.services.ProviderAPIError,
+        RequestException,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
         return []
     numbers = []
     for row in (metadata or {}).get("episodes") or []:
@@ -173,7 +191,7 @@ def _episode_next_url(episode: Episode) -> str:
             next_item.episode_number,
         )
 
-    # Metadata lets us distinguish a missing local row from the end of a season.
+    # Current Floppy resolves the next released episode from season metadata.
     episode_numbers = _metadata_episode_numbers(item.media_id, item.source, season_number)
     later_numbers = [number for number in episode_numbers if number > episode_number]
     if later_numbers:
@@ -204,7 +222,13 @@ def _episode_next_url(episode: Episode) -> str:
             tv.item.media_id,
             tv.item.source,
         )
-    except (providers.services.ProviderAPIError, RequestException, KeyError, TypeError, ValueError):
+    except (
+        providers.services.ProviderAPIError,
+        RequestException,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
         return ""
 
     candidate_seasons = []
@@ -226,10 +250,43 @@ def _episode_next_url(episode: Episode) -> str:
     return ""
 
 
-def _movie_date_suggestions(user, movie) -> list[dict[str, str]]:
+def _date_value(value) -> str:
+    if not value:
+        return ""
+    if isinstance(value, str):
+        parsed = parse_date(value[:10])
+        return parsed.isoformat() if parsed else ""
+    date_method = getattr(value, "date", None)
+    if callable(date_method):
+        try:
+            return date_method().isoformat()
+        except (TypeError, ValueError):
+            return ""
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        try:
+            return isoformat()
+        except (TypeError, ValueError):
+            return ""
+    return ""
+
+
+def _movie_date_suggestions(movie: Movie, user) -> list[dict[str, str]]:
+    """Return the accepted v1.1 movie date choices using current Smart Dates."""
     item = getattr(movie, "item", None)
-    if item is None or item.source != Sources.TMDB.value:
+    if item is None:
         return []
+
+    suggestions: list[dict[str, str]] = []
+    release_date = _date_value(getattr(item, "release_datetime", None))
+    if release_date:
+        suggestions.append(
+            {"kind": "release", "label": "Release Date", "date": release_date}
+        )
+
+    if item.source != Sources.TMDB.value:
+        return suggestions
+
     preferred_region = str(
         getattr(user, "preferred_region", "")
         or getattr(user, "country", "")
@@ -242,20 +299,48 @@ def _movie_date_suggestions(user, movie) -> list[dict[str, str]]:
             media_id=item.media_id,
             preferred_region=preferred_region,
         )
-    except (providers.services.ProviderAPIError, RequestException, KeyError, TypeError, ValueError):
+    except (
+        providers.services.ProviderAPIError,
+        RequestException,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
         logger.info("Post-Watch date suggestions unavailable for movie %s", item.media_id)
-        return []
+        return suggestions
+
     labels = {
         "premiere": "Premiere",
-        "theatrical": "Theatrical",
-        "digital": "Digital",
-        "physical": "Physical",
+        "theatrical": "First Theatrical Release",
+        "digital": "Digital Release",
+        "physical": "Physical Release",
     }
-    return [
+    suggestions.extend(
         {"kind": key, "label": labels[key], "date": value}
         for key, value in values.items()
         if key in labels and value
-    ]
+    )
+
+    # Different release classifications can legitimately share a date. Keep
+    # each labelled choice, but suppress exact duplicate label/date pairs.
+    unique = []
+    seen = set()
+    for suggestion in suggestions:
+        key = (suggestion["label"], suggestion["date"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(suggestion)
+    return unique
+
+
+def _episode_date_suggestions(episode: Episode) -> list[dict[str, str]]:
+    air_date = _date_value(getattr(episode.item, "release_datetime", None))
+    return (
+        [{"kind": "air", "label": "Air Date", "date": air_date}]
+        if air_date
+        else []
+    )
 
 
 def _movie_card(play: MoviePlay) -> dict[str, Any]:
@@ -269,9 +354,9 @@ def _movie_card(play: MoviePlay) -> dict[str, Any]:
         "subtitle": "Movie",
         "image": item.image,
         "watched_at": watched_at,
-        "watched_date": timezone.localdate(watched_at).isoformat() if watched_at else "",
+        "watched_date": timezone.localdate(watched_at).isoformat(),
         "details_url": _movie_details_url(play),
-        "date_suggestions": _movie_date_suggestions(play.movie.user, play.movie),
+        "date_suggestions": _movie_date_suggestions(play.movie, play.movie.user),
         "next_url": "",
     }
 
@@ -291,25 +376,36 @@ def _episode_card(episode: Episode) -> dict[str, Any]:
         "subtitle": f"{tv.item.title} · S{season_number:02d}E{episode_number:02d}",
         "image": item.image or season.item.image or tv.item.image,
         "watched_at": watched_at,
-        "watched_date": timezone.localdate(watched_at).isoformat() if watched_at else "",
+        "watched_date": timezone.localdate(watched_at).isoformat(),
         "details_url": _episode_details_url(episode, season_number, episode_number),
-        "date_suggestions": [],
+        "date_suggestions": _episode_date_suggestions(episode),
         "next_url": _episode_next_url(episode),
     }
 
 
 def build_post_watch_cards(user):
     """Build the derived seven-day inbox of recently watched unrated items."""
-    cutoff = timezone.now() - timezone.timedelta(days=POST_WATCH_LOOKBACK_DAYS)
-    recent = Q(end_date__gte=cutoff) | Q(end_date__isnull=True, created_at__gte=cutoff)
+    cutoff = timezone.now() - timedelta(days=POST_WATCH_LOOKBACK_DAYS)
+    recent = Q(end_date__gte=cutoff) | Q(
+        end_date__isnull=True,
+        created_at__gte=cutoff,
+    )
 
     movie_plays = list(
-        MoviePlay.objects.filter(recent, movie__user=user, movie__score__isnull=True)
+        MoviePlay.objects.filter(
+            recent,
+            movie__user=user,
+            movie__score__isnull=True,
+        )
         .select_related("movie", "movie__item", "movie__user")
         .order_by("-end_date", "-created_at")[:POST_WATCH_MAX_CARDS]
     )
     episodes = list(
-        Episode.objects.filter(recent, related_season__user=user, score__isnull=True)
+        Episode.objects.filter(
+            recent,
+            related_season__user=user,
+            score__isnull=True,
+        )
         .select_related(
             "item",
             "related_season",
@@ -332,17 +428,20 @@ def build_post_watch_cards(user):
     )
 
     cards = [
-        *(_movie_card(play) for play in movie_plays if _watch_key("movie", play.id) not in dismissed),
+        *(
+            _movie_card(play)
+            for play in movie_plays
+            if _watch_key("movie", play.id) not in dismissed
+        ),
         *(
             _episode_card(episode)
             for episode in episodes
             if _watch_key("episode", episode.id) not in dismissed
         ),
     ]
-    cards.sort(
-        key=lambda card: card.get("watched_at") or timezone.make_aware(datetime.min),
-        reverse=True,
-    )
+    # MoviePlay.created_at and Episode.created_at are non-null, so every card
+    # has an aware watched_at even when the explicit end_date is absent.
+    cards.sort(key=lambda card: card["watched_at"], reverse=True)
     return cards[:POST_WATCH_MAX_CARDS]
 
 
@@ -360,7 +459,9 @@ def _datetime_on_selected_date(value: str, original):
         return None
     if original is None:
         original = timezone.now()
-    local_original = timezone.localtime(original) if timezone.is_aware(original) else original
+    local_original = (
+        timezone.localtime(original) if timezone.is_aware(original) else original
+    )
     naive = datetime.combine(selected, local_original.time().replace(tzinfo=None))
     return timezone.make_aware(naive, timezone.get_current_timezone())
 
@@ -422,14 +523,17 @@ def post_watch_rate(request):
 
 @login_required
 @require_POST
-def post_watch_date(request):
+def post_watch_update_date(request):
     watch_key = str(request.POST.get("watch_key") or "").strip()
     kind, watch = _lookup_watch(request.user, watch_key)
     if watch is None:
         return HttpResponseBadRequest("Invalid watch.")
 
     old_date = watch.end_date
-    new_date = _datetime_on_selected_date(request.POST.get("watched_date"), old_date or watch.created_at)
+    new_date = _datetime_on_selected_date(
+        request.POST.get("watched_date"),
+        old_date or watch.created_at,
+    )
     if new_date is None:
         return HttpResponseBadRequest("Invalid watched date.")
 
