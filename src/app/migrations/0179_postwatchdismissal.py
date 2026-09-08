@@ -34,11 +34,17 @@ def copy_legacy_dismissals(apps, schema_editor):
             or values.get("created_at")
             or timezone.now()
         )
-        PostWatchDismissal.objects.get_or_create(
+        dismissal, created = PostWatchDismissal.objects.get_or_create(
             user_id=user_id,
             watch_key=watch_key,
-            defaults={"dismissed_at": dismissed_at},
         )
+        if created:
+            # auto_now_add sets the insertion time during model save. Restore
+            # the legacy value afterwards so an in-place migration retains the
+            # user's original dismissal history as well as the dismissal itself.
+            PostWatchDismissal.objects.filter(pk=dismissal.pk).update(
+                dismissed_at=dismissed_at,
+            )
 
 
 class Migration(migrations.Migration):
