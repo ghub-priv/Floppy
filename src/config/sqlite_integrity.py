@@ -1442,7 +1442,7 @@ class IntegrityScanTimeoutError(Exception):
 def inspect_database(db_path: str, *, timeout_seconds: float | None = None) -> dict:
     """Report SQLite storage and relationship state without changing anything.
 
-    Returns ``{\"quick_check\": str, \"conflicts\": dict | None}``. ``conflicts`` is
+    Returns ``{"quick_check": str, "conflicts": dict | None}``. ``conflicts`` is
     the summary from :func:`_inspect_foreign_keys`, or ``None`` when every
     relationship is intact.
 
