@@ -158,6 +158,9 @@ jobs:
       - name: Install test dependencies
         run: uv sync --locked --no-default-groups --group test
 
+      - name: Install Playwright Chromium
+        run: uv run --no-sync playwright install --with-deps chromium
+
       - name: Set test environment
         run: |
           if [ -n "${{ secrets.SECRET }}" ]; then echo "SECRET=${{ secrets.SECRET }}" >> "$GITHUB_ENV"; fi
