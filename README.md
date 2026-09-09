@@ -97,45 +97,34 @@ These customisations have already been moved from runtime patching into source-n
 | Duplicate aggregation performance optimisation | integrated |
 | Redis hardening parity | current source retained as superior to r13 override |
 | Kodi Control + Sync | v2.7 |
+| Post-Watch Workflow | v1.1.0 |
 | Patch regression coverage for the above | integrated |
 
-The aggregate local-patchset parity work is now complete for the accepted Explore, IMDb and duplicate-aggregation behaviour. The old Redis runtime override was deliberately not restored because current Floppy already contains a more complete source-native Redis tuning implementation.
+The aggregate local-patchset parity work is complete for the accepted Explore, IMDb and duplicate-aggregation behaviour. The old Redis runtime override was deliberately not restored because current Floppy already contains a more complete source-native Redis tuning implementation.
 
-Kodi Control + Sync v2.7 is also now integrated. Its source-native implementation includes Kodi playback event handling, durable progress checkpoints, deferred exact-item resume, authenticated playback controls, rating/playback isolation, completed-season replay safeguards, Kodi-owned Now Playing provenance and Play in Kodi actions while reusing current Floppy's shared playback and provider-resolution architecture.
+Kodi Control + Sync v2.7 is integrated. Its source-native implementation includes Kodi playback event handling, durable progress checkpoints, deferred exact-item resume, authenticated playback controls, rating/playback isolation, completed-season replay safeguards, Kodi-owned Now Playing provenance and Play in Kodi actions while reusing current Floppy's shared playback and provider-resolution architecture.
+
+Post-Watch Workflow v1.1.0 is also integrated. It provides the seven-day recent-unrated Movie/Episode inbox, managed per-watch dismissals, current-scale ratings, exact watched-date correction with History cache invalidation, Smart Watched Date and Air Date suggestions, replay deduplication and Next Episode navigation. Its source port uses the current Smart Watched Dates region/language contract and preserves current replay/watch-state safeguards.
 
 The old runtime patch harness remains useful as historical evidence while porting, but the objective is to remove the need for runtime patch injection altogether.
 
 ### Currently being ported / reviewed
 
-#### Post-Watch Workflow v1.1.0
+#### Integration Health Centre v1.0.0
 
-Active PR: **#4**
+The next active source port is the accepted Integration Health Centre.
 
-The source-native Post-Watch port currently covers:
+Its local implementation provided read-only operational diagnostics for Floppy's external integrations and core runtime dependencies, including Kodi, MDBList, TMDb, Redis, Celery and the database.
 
-- a managed `PostWatchDismissal` model with migration of legacy runtime data;
-- a seven-day recent-unrated movie and episode inbox;
-- per-watch dismissals;
-- rating using the configured Floppy score scale;
-- exact watched-date correction with History cache invalidation;
-- Smart Watched Date suggestions for movies;
-- episode Air Date suggestions;
-- Next Episode navigation;
-- dedicated routes, templates, admin coverage and regression tests.
+The source-native port will preserve those useful diagnostics while adapting them to the current architecture. In particular, health reporting must remain observational and additive: Kodi Control + Sync and other integrations must not depend on the Health Centre in order to function.
 
-PR #4 remains intentionally separate so its tracking, dismissal and watched-date behaviour can be reconciled against the current integration baseline and validated independently.
+The historical runtime-patch-harness check will not be recreated as an operational dependency. The source tree and CI are now the authoritative integration baseline.
 
 ---
 
 ## Remaining r13 work
 
 The r13 baseline still contains accepted customisations that need to be reconciled with current source. The rough dependency order is intentional because later features depend on earlier source-native integration work.
-
-### Integration Health Centre
-
-The original Integration Health Centre provided read-only diagnostics for services such as Kodi, MDBList, TMDb, Redis, Celery and the database.
-
-Its source port will be adapted to the new architecture. In particular, the old runtime-patch-harness health check no longer makes sense once these features live natively in source and must be replaced rather than copied.
 
 ### Rating Intelligence
 
@@ -249,4 +238,4 @@ The immediate objective is simple:
 
 > **Finish converting the accepted r13 runtime patch stack into a clean, tested, source-native Floppy build with no patch-overlay dependency.**
 
-The next active port is **Post-Watch Workflow v1.1.0**. Once the remaining accepted r13 work is complete, `chris/integration` becomes the reproducible source of truth for our customised Floppy installation rather than `/opt/floppy/patches/` and a collection of container overlays.
+The next active port is **Integration Health Centre v1.0.0**. Once the remaining accepted r13 work is complete, `chris/integration` becomes the reproducible source of truth for our customised Floppy installation rather than `/opt/floppy/patches/` and a collection of container overlays.
