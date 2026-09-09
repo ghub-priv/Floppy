@@ -641,8 +641,10 @@ class MediaManager(models.Manager):
             #
             # _aggregate_item_data only reads scalar history fields from these
             # duplicate rows; item metadata comes from the displayed media row.
-            # This intentionally skips both the Item join and _apply_prefetch_related:
-            # the events/tags/seasons/episodes
+            # Do not select_related Item here: default model ordering may still
+            # require an SQL join, but hydrating Item columns for every duplicate
+            # row is unnecessary. _apply_prefetch_related is also intentionally
+            # skipped: the events/tags/seasons/episodes
             # prefetch bundle it would pull in is for the *displayed* media_list,
             # not this internal aggregation pass, and re-fetching it here was
             # doubling those queries for every list page.
