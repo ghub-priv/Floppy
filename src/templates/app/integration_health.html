@@ -1,0 +1,53 @@
+{% extends "users/base.html" %}
+{% load i18n %}
+
+{% block title %}{% translate "Integration Health" %} - Floppy{% endblock title %}
+
+{% block settings_content %}
+  <div class="space-y-6">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <h2 class="text-2xl font-semibold">Integration Health Centre v{{ version }}</h2>
+        <p class="mt-2 text-sm text-[var(--color-text-muted)]">
+          Read-only diagnostics for Floppy's runtime dependencies and external integrations.
+        </p>
+      </div>
+      <a href="{% url 'integration_health' %}"
+         class="inline-flex items-center justify-center rounded-md bg-[var(--color-surface-strong)] px-3 py-2 text-sm font-medium text-[var(--color-text)] hover:bg-[var(--color-surface-muted)]">
+        {% translate "Refresh" %}
+      </a>
+    </div>
+
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm text-[var(--color-text-muted)]">
+      These checks do not modify configuration or media state. The existing <code>/health/full/</code>
+      endpoint remains the machine-oriented container health check; this page adds operator-facing detail.
+    </div>
+
+    <div class="space-y-3">
+      {% for check in checks %}
+        <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <h3 class="font-semibold text-[var(--color-text)]">{{ check.name }}</h3>
+            <span class="inline-flex w-fit items-center rounded-full px-2.5 py-1 text-xs font-medium
+                         {% if check.status == 'healthy' %}bg-green-500/15 text-green-600 dark:text-green-400
+                         {% elif check.status == 'degraded' %}bg-amber-500/15 text-amber-600 dark:text-amber-400
+                         {% elif check.status == 'unavailable' %}bg-red-500/15 text-red-600 dark:text-red-400
+                         {% else %}bg-[var(--color-surface-strong)] text-[var(--color-text-muted)]{% endif %}">
+              {{ check.status_label }}
+            </span>
+          </div>
+
+          <p class="mt-2 text-sm text-[var(--color-text-muted)]">{{ check.summary }}</p>
+
+          {% if check.details %}
+            <ul class="mt-3 space-y-1 text-xs text-[var(--color-text-muted)]">
+              {% for detail in check.details %}
+                <li class="break-words">{{ detail }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </section>
+      {% endfor %}
+    </div>
+  </div>
+{% endblock settings_content %}
