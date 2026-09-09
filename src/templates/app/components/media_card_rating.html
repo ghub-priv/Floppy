@@ -120,7 +120,7 @@
 {% if from_grid %}
   {% if not public_view|default:False %}
     {% if qr.media_type == "tv" or qr.media_type == "season" %}
-      {% derived_tv_rating user qr.media_type item as derived_tv_score %}
+      {% derived_tv_rating user qr.media_type item media as derived_tv_score %}
       {% include "app/components/derived_tv_rating_card.html" with derived_tv_score=derived_tv_score only %}
     {% endif %}
   {% endif %}
