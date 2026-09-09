@@ -1,11 +1,13 @@
 # Original implementation by sboddy — FuzzyGrim/Yamtrack PR #1506
 import logging
 
+from app.integration_health_telemetry import record_integration_health_event
 from app.models import MediaTypes
 
 from .base import BaseWebhookProcessor
 from .kodi_runtime import (
     KODI_LIVE_EVENT_MAP,
+    KODI_LIVE_ONLY_EVENTS,
     PERCENT_COMPLETE_THRESHOLD,
     KodiEvent,
     KodiRuntimeMixin,
@@ -30,6 +32,30 @@ def _coerce_float(value):
 
 class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
     """Processor for Kodi webhook events via the HTTP Scrobbler add-on."""
+
+    def process_payload(self, payload, user):
+        """Process a Kodi payload while recording best-effort health telemetry."""
+        record_integration_health_event(user, payload, "received")
+        result = super().process_payload(payload, user)
+
+        # Rating success is recorded by _process_rating below and ordinary
+        # playback success by _process_media. Live-only events deliberately do
+        # not enter _process_media, so record their successful handling here.
+        if "rating" not in payload and payload.get("event") in KODI_LIVE_ONLY_EVENTS:
+            record_integration_health_event(user, payload, "success")
+        return result
+
+    def _process_rating(self, payload, user):
+        result = super()._process_rating(payload, user)
+        # Preserve the accepted v1 telemetry contract: a handled rating payload
+        # is a successful scrobbler event even when it does not create media.
+        record_integration_health_event(user, payload, "success")
+        return result
+
+    def _process_media(self, payload, user, ids):
+        result = super()._process_media(payload, user, ids)
+        record_integration_health_event(user, payload, "success")
+        return result
 
     def _is_supported_event(self, event_type):
         return event_type in KODI_LIVE_EVENT_MAP
