@@ -99,7 +99,7 @@ def _prefetched_episodes(media_type, tracked_media):
     if tracked_media is None:
         return None
 
-    prefetched = getattr(tracked_media, "_prefetched_objects_cache", {})
+    prefetched = getattr(tracked_media, "_prefetched_objects_cache", None) or {}
     if media_type == MediaTypes.SEASON.value:
         return prefetched.get("episodes")
 
@@ -115,9 +115,8 @@ def _prefetched_episodes(media_type, tracked_media):
         season_number = _season_number(getattr(season, "item", None))
         if season_number is None or season_number <= 0:
             continue
-        season_episodes = getattr(season, "_prefetched_objects_cache", {}).get(
-            "episodes"
-        )
+        season_prefetched = getattr(season, "_prefetched_objects_cache", None) or {}
+        season_episodes = season_prefetched.get("episodes")
         if season_episodes is None:
             return None
         episodes.extend(season_episodes)
