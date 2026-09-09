@@ -639,16 +639,19 @@ class MediaManager(models.Manager):
             # Using all statuses is intentional: an item filtered as IN_PROGRESS may have
             # a more-recent COMPLETED entry that should determine its aggregated_status.
             #
-            # _aggregate_item_data only reads scalar fields (progress, status, dates,
-            # score) and item.media_type off these entries, so this intentionally
-            # skips _apply_prefetch_related: the events/tags/seasons/episodes
+            # _aggregate_item_data only reads scalar history fields from these
+            # duplicate rows; item metadata comes from the displayed media row.
+            # Do not select_related Item here: default model ordering may still
+            # require an SQL join, but hydrating Item columns for every duplicate
+            # row is unnecessary. _apply_prefetch_related is also intentionally
+            # skipped: the events/tags/seasons/episodes
             # prefetch bundle it would pull in is for the *displayed* media_list,
             # not this internal aggregation pass, and re-fetching it here was
             # doubling those queries for every list page.
             all_media = model.objects.filter(
                 user=user.id,
                 item_id__in=queried_item_ids,
-            ).select_related("item")
+            )
 
             # Group media by item_id
             media_by_item = {}
@@ -771,7 +774,9 @@ class MediaManager(models.Manager):
                 # instantiation time proportionally for large libraries.
                 episode_qs = episode_qs.only(
                     "id",
+                    "created_at",
                     "end_date",
+                    "score",
                     "status",
                     "related_season_id",
                     "item__id",
@@ -1256,7 +1261,9 @@ class MediaManager(models.Manager):
             filtered = []
             for media in media_list:
                 latest_status = getattr(media, "aggregated_status", None) or getattr(
-                    media, "status", None
+                    media,
+                    "status",
+                    None,
                 )
                 if latest_status == desired_status:
                     filtered.append(media)
@@ -1274,7 +1281,8 @@ class MediaManager(models.Manager):
             )
             in_progress_list = list(in_progress_list)
             in_progress_list = filter_by_latest_status(
-                in_progress_list, Status.IN_PROGRESS.value
+                in_progress_list,
+                Status.IN_PROGRESS.value,
             )
 
             # Get planned items if needed
@@ -1287,7 +1295,8 @@ class MediaManager(models.Manager):
                     sort_filter=None,
                 )
                 planned_list = filter_by_latest_status(
-                    list(planned_queryset), Status.PLANNING.value
+                    list(planned_queryset),
+                    Status.PLANNING.value,
                 )
 
             # Handle different modes
@@ -1369,12 +1378,13 @@ class MediaManager(models.Manager):
                         self._fix_missing_season_images(in_progress_processed)
 
                     sorted_in_progress = self._sort_in_progress_media(
-                        in_progress_processed, sort_by
+                        in_progress_processed,
+                        sort_by,
                     )
                     total_in_progress = len(sorted_in_progress)
 
                     if specific_media_type and specific_media_type.endswith(
-                        "_in_progress"
+                        "_in_progress",
                     ):
                         paginated_in_progress = sorted_in_progress[items_limit:]
                     else:
@@ -1397,7 +1407,8 @@ class MediaManager(models.Manager):
                         self._fix_missing_season_images(planned_processed)
 
                     sorted_planned = self._sort_in_progress_media(
-                        planned_processed, sort_by
+                        planned_processed,
+                        sort_by,
                     )
                     total_planned = len(sorted_planned)
 
@@ -1699,7 +1710,8 @@ class MediaManager(models.Manager):
                     else:
                         # Fall back to database annotation if metadata doesn't have max_progress
                         self._annotate_season_released_episodes(
-                            [season], current_datetime
+                            [season],
+                            current_datetime,
                         )
                 except Exception:
                     # If metadata fetch fails, fall back to database annotation

@@ -69,6 +69,12 @@ class IMDBImporter:
         # Track bulk creation lists for each media type
         self.bulk_media = defaultdict(list)
 
+        # The importer intentionally resolves every supported row twice: once
+        # while detecting TMDb duplicates and once while building media rows.
+        # Cache both hits and misses for the lifetime of one import so those
+        # passes never duplicate provider calls.
+        self.tmdb_cache = {}
+
         logger.info(
             "Initialized IMDB importer for user %s with mode %s",
             user.username,
@@ -226,34 +232,40 @@ class IMDBImporter:
         return title_type in IMDB_TYPE_MAPPING
 
     def _lookup_in_tmdb(self, imdb_id, title_type):
-        """Look up media in TMDB using IMDB ID."""
+        """Look up media in TMDB using IMDB ID, caching per import."""
+        cache_key = (imdb_id, title_type)
+        if cache_key in self.tmdb_cache:
+            return self.tmdb_cache[cache_key]
+
         try:
             response = app.providers.tmdb.find(imdb_id, "imdb_id")
         except ProviderAPIError as e:
             logger.warning("Error looking up IMDB ID %s in TMDB: %s", imdb_id, e)
+            self.tmdb_cache[cache_key] = None
             return None
 
         media_type = IMDB_TYPE_MAPPING.get(title_type, "")
+        result = None
 
         if media_type == MediaTypes.MOVIE.value and response.get("movie_results"):
             movie = response["movie_results"][0]
-            return {
+            result = {
                 "media_id": movie["id"],
                 "title": movie["title"],
                 "image": app.providers.tmdb.get_image_url(movie["poster_path"]),
                 "media_type": MediaTypes.MOVIE.value,
             }
-
-        if media_type == MediaTypes.TV.value and response.get("tv_results"):
+        elif media_type == MediaTypes.TV.value and response.get("tv_results"):
             tv_show = response["tv_results"][0]
-            return {
+            result = {
                 "media_id": tv_show["id"],
                 "title": tv_show["name"],
                 "image": app.providers.tmdb.get_image_url(tv_show["poster_path"]),
                 "media_type": MediaTypes.TV.value,
             }
 
-        return None
+        self.tmdb_cache[cache_key] = result
+        return result
 
     def _create_or_update_item(self, tmdb_data, media_type):
         """Create or update the item in database."""
