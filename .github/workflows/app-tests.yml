@@ -135,7 +135,7 @@ jobs:
     name: full shard ${{ matrix.shard }}
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -226,12 +226,19 @@ jobs:
       - name: Run full regression shard
         env:
           WITH_COVERAGE: ${{ github.event_name == 'push' }}
+          SHARD: ${{ matrix.shard }}
         run: |
           mapfile -t TESTS < full-tests.txt
-          if [ "$WITH_COVERAGE" = "true" ]; then
-            uv run --no-sync coverage run src/manage.py test "${TESTS[@]}" --parallel --exclude-tag network
+          if [ "$SHARD" = "1" ]; then
+            PARALLEL_ARGS=(--parallel 1)
           else
-            uv run --no-sync python src/manage.py test "${TESTS[@]}" --parallel --exclude-tag network
+            PARALLEL_ARGS=(--parallel)
+          fi
+
+          if [ "$WITH_COVERAGE" = "true" ]; then
+            uv run --no-sync coverage run src/manage.py test "${TESTS[@]}" "${PARALLEL_ARGS[@]}" --exclude-tag network
+          else
+            uv run --no-sync python src/manage.py test "${TESTS[@]}" "${PARALLEL_ARGS[@]}" --exclude-tag network
           fi
 
       - name: Build coverage report
