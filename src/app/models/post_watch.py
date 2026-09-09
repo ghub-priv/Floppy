@@ -14,6 +14,8 @@ class PostWatchDismissal(models.Model):
     dismissed_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        """Database constraints and ordering for Post-Watch dismissals."""
+
         ordering = ["-dismissed_at"]
         constraints = [
             models.UniqueConstraint(
@@ -26,4 +28,5 @@ class PostWatchDismissal(models.Model):
         ]
 
     def __str__(self):
+        """Return a compact user/watch identity for admin and diagnostics."""
         return f"{self.user_id}:{self.watch_key}"
