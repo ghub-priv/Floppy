@@ -1,67 +1,61 @@
 # Original implementation by sboddy — FuzzyGrim/Yamtrack PR #1506
 import logging
-from enum import StrEnum
 
 from app.models import MediaTypes
 
 from .base import BaseWebhookProcessor
+from .kodi_runtime import (
+    KODI_LIVE_EVENT_MAP,
+    PERCENT_COMPLETE_THRESHOLD,
+    KodiEvent,
+    KodiRuntimeMixin,
+)
 
 logger = logging.getLogger(__name__)
 
-PERCENT_COMPLETE_THRESHOLD = 80
+
+def _coerce_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
-class KodiEvent(StrEnum):
-    """Kodi event."""
+def _coerce_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
-    PLAYBACK_START = "start"
-    PLAYBACK_STOP = "stop"
-    PLAYBACK_END = "end"
 
-
-class KodiWebhookProcessor(BaseWebhookProcessor):
+class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
     """Processor for Kodi webhook events via the HTTP Scrobbler add-on."""
 
-    def process_payload(self, payload, user):
-        """Return the process payload."""
-        event_type = payload.get("event")
-        if not self._is_supported_event(event_type):
-            logger.debug("Ignoring Kodi webhook event type: %s", event_type)
-            return
-
-        ids = self._extract_external_ids(payload)
-        logger.info("Extracted IDs from Kodi payload: %s", ids)
-
-        if not any(ids.values()):
-            logger.warning("Ignoring Kodi webhook: no external ID found in payload.")
-            return
-
-        self._process_media(payload, user, ids)
-
     def _is_supported_event(self, event_type):
-        return event_type in {
-            KodiEvent.PLAYBACK_START,
-            KodiEvent.PLAYBACK_STOP,
-            KodiEvent.PLAYBACK_END,
-        }
+        return event_type in KODI_LIVE_EVENT_MAP
 
     def _is_played(self, payload):
         if payload.get("event") == KodiEvent.PLAYBACK_END:
             return True
         if payload.get("event") == KodiEvent.PLAYBACK_STOP:
-            percent = payload.get("progress", {}).get("percent", 0)
-            if percent and percent >= PERCENT_COMPLETE_THRESHOLD:
-                return True
+            progress = payload.get("progress") or {}
+            if not isinstance(progress, dict):
+                return False
+            percent = _coerce_float(progress.get("percent"))
+            return percent is not None and percent >= PERCENT_COMPLETE_THRESHOLD
         return False
 
     def _get_media_type(self, payload):
-        return self.MEDIA_TYPE_MAPPING.get(payload.get("mediaType", "").capitalize())
+        media_type = (payload.get("mediaType") or "").capitalize()
+        return self.MEDIA_TYPE_MAPPING.get(media_type)
 
     def _get_media_title(self, payload):
         if self._get_media_type(payload) == MediaTypes.TV.value:
             series_name = payload.get("tvShowTitle")
-            season_number = payload.get("season")
-            episode_number = payload.get("episode")
+            season_number = _coerce_int(payload.get("season"))
+            episode_number = _coerce_int(payload.get("episode"))
+            if season_number is None or episode_number is None:
+                return series_name
             return f"{series_name} S{season_number:02d}E{episode_number:02d}"
 
         if self._get_media_type(payload) == MediaTypes.MOVIE.value:
@@ -77,9 +71,22 @@ class KodiWebhookProcessor(BaseWebhookProcessor):
     def _extract_series_title(self, payload):
         return payload.get("tvShowTitle")
 
+    def _skip_completed_episode_replay_activity(self, payload, user, ids):
+        """Resolve the completed-season safeguard against the show identity."""
+        show_ids = self._show_level_ids(payload, ids)
+        return super()._skip_completed_episode_replay_activity(payload, user, show_ids)
+
     def _extract_external_ids(self, payload):
-        episode_ids = payload.get("uniqueIds", {})
-        series_ids = payload.get("tvShowUniqueIds", {})
+        # Preserve upstream Floppy's episode-first ID behaviour. The Kodi
+        # runtime layer explicitly chooses tvShowUniqueIds only where a show
+        # identity is required for live state, rating, or completed-season
+        # replay resolution.
+        episode_ids = payload.get("uniqueIds") or {}
+        series_ids = payload.get("tvShowUniqueIds") or {}
+        if not isinstance(episode_ids, dict):
+            episode_ids = {}
+        if not isinstance(series_ids, dict):
+            series_ids = {}
         return {
             "tmdb_id": episode_ids.get("tmdb") or series_ids.get("tmdb"),
             "imdb_id": episode_ids.get("imdb") or series_ids.get("imdb"),

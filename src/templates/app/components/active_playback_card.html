@@ -1,6 +1,8 @@
 
 {% load i18n %}
 {% load app_tags %}
+{% load kodi_tags %}
+{% kodi_controls_available user as show_kodi_controls %}
 
 <div data-active-playback-card
      data-playback-status="{{ active_playback_card.status }}"
@@ -47,6 +49,41 @@
         {% endif %}
         <span data-playback-time>{{ active_playback_card.progress_display }}</span>
       </p>
+
+      {% if show_kodi_controls %}
+        <form data-kodi-playback-controls
+              class="mt-3 flex flex-wrap items-center gap-2"
+              hx-post="{% url 'kodi_control' %}"
+              hx-swap="none"
+              hx-disabled-elt="button">
+          {% csrf_token %}
+          <button type="submit"
+                  name="action"
+                  value="seek_back"
+                  class="px-3 py-1.5 rounded-md text-xs font-medium bg-[var(--color-surface-alt)] text-[var(--color-text)] hover:text-[var(--color-link)] transition-colors"
+                  title="{% translate 'Seek back 30 seconds' %}">−30s</button>
+          {% if active_playback_card.status == "paused" %}
+            <button type="submit"
+                    name="action"
+                    value="resume"
+                    class="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">{% translate "Resume" %}</button>
+          {% else %}
+            <button type="submit"
+                    name="action"
+                    value="pause"
+                    class="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">{% translate "Pause" %}</button>
+          {% endif %}
+          <button type="submit"
+                  name="action"
+                  value="seek_forward"
+                  class="px-3 py-1.5 rounded-md text-xs font-medium bg-[var(--color-surface-alt)] text-[var(--color-text)] hover:text-[var(--color-link)] transition-colors"
+                  title="{% translate 'Seek forward 30 seconds' %}">+30s</button>
+          <button type="submit"
+                  name="action"
+                  value="stop"
+                  class="px-3 py-1.5 rounded-md text-xs font-medium bg-[var(--color-surface-alt)] text-[var(--color-text)] hover:text-[var(--color-link)] transition-colors">{% translate "Stop" %}</button>
+        </form>
+      {% endif %}
     </div>
   </div>
 </div>
