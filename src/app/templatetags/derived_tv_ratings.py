@@ -94,24 +94,85 @@ def _episode_rows(user, media_type, media):
     )
 
 
-@register.simple_tag
-def derived_tv_rating(user, media_type, media):
-    """Return a read-only episode-derived rating for a TV show or season."""
-    if not getattr(user, "is_authenticated", False):
+def _prefetched_episodes(media_type, tracked_media):
+    """Return prefetched episode objects, or None when the cache is incomplete."""
+    if tracked_media is None:
         return None
 
-    if media_type not in {
-        MediaTypes.TV.value,
-        MediaTypes.SEASON.value,
-    }:
+    prefetched = getattr(tracked_media, "_prefetched_objects_cache", {})
+    if media_type == MediaTypes.SEASON.value:
+        return prefetched.get("episodes")
+
+    if media_type != MediaTypes.TV.value:
         return None
 
+    seasons = prefetched.get("seasons")
+    if seasons is None:
+        return None
+
+    episodes = []
+    for season in seasons:
+        season_number = _season_number(getattr(season, "item", None))
+        if season_number is None or season_number <= 0:
+            continue
+        season_episodes = getattr(season, "_prefetched_objects_cache", {}).get(
+            "episodes"
+        )
+        if season_episodes is None:
+            return None
+        episodes.extend(season_episodes)
+    return episodes
+
+
+def _datetime_sort_value(value):
+    """Return a comparable value for Django's descending nullable date ordering."""
+    if value is None:
+        return float("-inf")
+    try:
+        return value.timestamp()
+    except (AttributeError, OSError, OverflowError, ValueError):
+        return float("-inf")
+
+
+def _prefetched_episode_rows(media_type, tracked_media):
+    """Build the same latest-completed-per-episode rows without issuing SQL."""
+    episodes = _prefetched_episodes(media_type, tracked_media)
+    if episodes is None:
+        return None
+
+    latest_by_item = {}
+    latest_keys = {}
+    for episode in episodes:
+        if getattr(episode, "status", None) != "Completed":
+            continue
+
+        item_id = getattr(episode, "item_id", None)
+        if item_id is None:
+            continue
+
+        key = (
+            _datetime_sort_value(getattr(episode, "end_date", None)),
+            _datetime_sort_value(getattr(episode, "created_at", None)),
+            getattr(episode, "id", 0) or 0,
+        )
+        if item_id not in latest_keys or key > latest_keys[item_id]:
+            latest_keys[item_id] = key
+            latest_by_item[item_id] = {
+                "item_id": item_id,
+                "score": getattr(episode, "score", None),
+            }
+
+    return [latest_by_item[item_id] for item_id in sorted(latest_by_item)]
+
+
+def _build_derived_rating(user, media_type, media, rows):
+    """Build the display payload from latest completed episode rows."""
     total = 0
     rated = 0
     score_sum = Decimal("0")
     seen_items = set()
 
-    for row in _episode_rows(user, media_type, media):
+    for row in rows:
         item_id = row["item_id"]
         if item_id in seen_items:
             continue
@@ -159,3 +220,21 @@ def derived_tv_rating(user, media_type, media):
         "specials_excluded": is_show,
         "version": DERIVED_TV_RATINGS_VERSION,
     }
+
+
+@register.simple_tag
+def derived_tv_rating(user, media_type, media, tracked_media=None):
+    """Return a read-only episode-derived rating for a TV show or season."""
+    if not getattr(user, "is_authenticated", False):
+        return None
+
+    if media_type not in {
+        MediaTypes.TV.value,
+        MediaTypes.SEASON.value,
+    }:
+        return None
+
+    rows = _prefetched_episode_rows(media_type, tracked_media)
+    if rows is None:
+        rows = _episode_rows(user, media_type, media)
+    return _build_derived_rating(user, media_type, media, rows)
