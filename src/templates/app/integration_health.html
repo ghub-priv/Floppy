@@ -29,9 +29,9 @@
           <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h3 class="font-semibold text-[var(--color-text)]">{{ check.name }}</h3>
             <span class="inline-flex w-fit items-center rounded-full px-2.5 py-1 text-xs font-medium
-                         {% if check.status == 'healthy' %}bg-green-500/15 text-green-600 dark:text-green-400
-                         {% elif check.status == 'degraded' %}bg-amber-500/15 text-amber-600 dark:text-amber-400
-                         {% elif check.status == 'unavailable' %}bg-red-500/15 text-red-600 dark:text-red-400
+                         {% if check.status == 'healthy' %}bg-green-500/15 text-[var(--color-status-clean)]
+                         {% elif check.status == 'degraded' %}bg-amber-500/15 text-[var(--color-status-dirty)]
+                         {% elif check.status == 'unavailable' %}bg-red-500/15 text-[var(--color-error-text)]
                          {% else %}bg-[var(--color-surface-strong)] text-[var(--color-text-muted)]{% endif %}">
               {{ check.status_label }}
             </span>
