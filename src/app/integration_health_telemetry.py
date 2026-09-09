@@ -71,5 +71,5 @@ def get_integration_health_telemetry(user_id: int) -> dict[str, object | None]:
         values = cache.get_many(keys.values())
     except Exception:
         logger.debug("Could not read Integration Health telemetry", exc_info=True)
-        return {name: None for name in keys}
+        return dict.fromkeys(keys)
     return {name: values.get(cache_key) for name, cache_key in keys.items()}
