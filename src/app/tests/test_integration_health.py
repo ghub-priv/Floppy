@@ -132,6 +132,7 @@ class IntegrationHealthViewTests(TestCase):
 
         self.assertEqual(result["status"], "healthy")
 
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=False)
     def test_celery_no_workers_is_degraded_not_exception(self):
         inspector = Mock()
         inspector.ping.return_value = None
@@ -142,6 +143,14 @@ class IntegrationHealthViewTests(TestCase):
             result = integration_health._check_celery()
 
         self.assertEqual(result["status"], "degraded")
+
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
+    def test_celery_eager_mode_is_healthy_without_worker_probe(self):
+        with patch("app.integration_health.celery_app.control.inspect") as inspect:
+            result = integration_health._check_celery()
+
+        self.assertEqual(result["status"], "healthy")
+        inspect.assert_not_called()
 
 
 @override_settings(CACHES=LOCMEM_CACHE)
