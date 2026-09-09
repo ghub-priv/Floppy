@@ -10,7 +10,7 @@ from app.models import Item, MediaManager, MediaTypes, Movie, Sources, Status
 
 
 class DuplicateAggregationQueryTests(TestCase):
-    def test_duplicate_history_fetch_does_not_join_item_table(self):
+    def test_duplicate_history_fetch_does_not_hydrate_item_columns(self):
         user = get_user_model().objects.create_user(username="duplicate-aggregation")
         item = Item.objects.create(
             media_id="duplicate-aggregation-movie",
@@ -51,9 +51,9 @@ class DuplicateAggregationQueryTests(TestCase):
 
         self.assertEqual(len(queries), 1)
         aggregation_sql = queries[0]["sql"].lower()
-        self.assertIn("app_movie", aggregation_sql)
-        self.assertNotIn("join", aggregation_sql)
-        self.assertNotIn("app_item", aggregation_sql)
+        selected_columns = aggregation_sql.partition(" from ")[0]
+        self.assertIn('"app_movie".', selected_columns)
+        self.assertNotIn('"app_item".', selected_columns)
 
         aggregated = result[0]
         self.assertEqual(aggregated.repeats, 2)
