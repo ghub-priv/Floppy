@@ -27,7 +27,7 @@ from app.discover_explore_core import (
     sort_library_candidates,
     state_url,
 )
-from app.models import MediaTypes, TV, Status
+from app.models import MediaTypes, Status, TV
 
 EXPLORE_MIN_DECADE = 1930
 EXPLORE_MIN_YEAR = 1930
