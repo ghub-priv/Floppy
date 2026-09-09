@@ -51,6 +51,8 @@ class DuplicateAggregationQueryTests(TestCase):
 
         self.assertEqual(len(queries), 1)
         aggregation_sql = queries[0]["sql"].lower()
+        # Ordering may still join Item; the optimisation is about avoiding Item
+        # columns in the duplicate-history projection/hydration path.
         selected_columns = aggregation_sql.partition(" from ")[0]
         self.assertIn('"app_movie".', selected_columns)
         self.assertNotIn('"app_item".', selected_columns)
