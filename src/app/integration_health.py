@@ -18,13 +18,14 @@ from django.db import connection
 from django.shortcuts import render
 
 from app.integration_health_telemetry import get_integration_health_telemetry
-from app.kodi_client import KodiConfigurationError, KodiError, KodiClient
+from app.kodi_client import KodiClient, KodiConfigurationError, KodiError
 from app.providers import credentials
 from config.celery import app as celery_app
 
 logger = logging.getLogger(__name__)
 
 PROBE_TIMEOUT = 3.0
+BYTES_PER_KIB = 1024
 STATUS_LABELS = {
     "healthy": "Healthy",
     "degraded": "Degraded",
@@ -52,9 +53,9 @@ def _human_bytes(value) -> str | None:
         return None
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     for unit in units:
-        if abs(amount) < 1024 or unit == units[-1]:
+        if abs(amount) < BYTES_PER_KIB or unit == units[-1]:
             return f"{amount:.1f} {unit}"
-        amount /= 1024
+        amount /= BYTES_PER_KIB
     return None
 
 
