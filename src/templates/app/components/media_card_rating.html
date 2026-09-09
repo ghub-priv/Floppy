@@ -49,7 +49,7 @@
       <span id="media-card-rating-value-{{ qr.instance_id }}">
         <span x-show="rating !== null" class="flex items-center gap-1 text-xs text-yellow-300 shrink-0">
           {% include "app/icons/star.svg" with classes="w-3 h-3 text-yellow-400 fill-current" %}
-          <span class="font-medium" x-text="rating"></span>
+          <span class="font-medium" x-text="rating">{% if qr.rating_value|show_media_score:user %}{{ qr.rating_value|score_display:user }}{% endif %}</span>
         </span>
       </span>
       <span x-show="rating === null"
@@ -120,7 +120,7 @@
 {% if from_grid %}
   {% if not public_view|default:False %}
     {% if qr.media_type == "tv" or qr.media_type == "season" %}
-      {% derived_tv_rating user qr.media_type item as derived_tv_score %}
+      {% derived_tv_rating user qr.media_type item media as derived_tv_score %}
       {% include "app/components/derived_tv_rating_card.html" with derived_tv_score=derived_tv_score only %}
     {% endif %}
   {% endif %}

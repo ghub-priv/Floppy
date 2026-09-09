@@ -4,6 +4,7 @@
 
 {# Hero variant of the episode track button used on the standalone episode page. The wrapper id is keyed on the stable source/media/season/episode identifiers (NOT episode.item.id) so that episode_save can target it with an OOB swap even on the very first watch, when no episode Item exists yet. The enclosing x-data="{ trackOpen: false }" scope and the track modal live in the parent template, so only this button is replaced on swap. #}
 {# Once a watch exists the button edits it (instance_id) instead of stacking another one, so status/start date/notes prefill and Delete is usable. Adding a rewatch is the "Add new entry" action inside the modal. #}
+{% if not track_button_oob %}<div class="flex w-full flex-wrap items-start gap-2 sm:w-auto">{% endif %}
 <div id="episode-track-button-{{ source }}-{{ media_id }}-{{ season_number }}-{{ episode_number }}"
      {% if track_button_oob %}hx-swap-oob="true"{% endif %}>
   <button type="button"
@@ -22,3 +23,8 @@
     {% endif %}
   </button>
 </div>
+
+{% if not track_button_oob and source == Sources.TMDB.value %}
+  {% include "app/components/kodi_play_action.html" with kodi_form_id="kodi-episode-play-form" kodi_status_id="kodi-episode-play-status" kodi_source=source kodi_media_type="episode" kodi_media_id=media_id kodi_include_season=1 kodi_season_number=season_number kodi_include_episode=1 kodi_episode_number=episode_number %}
+{% endif %}
+{% if not track_button_oob %}</div>{% endif %}
