@@ -6,7 +6,7 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from app.models import Item, MediaTypes, Movie, Sources, Status
+from app.models import Item, MediaManager, MediaTypes, Movie, Sources, Status
 
 
 class DuplicateAggregationQueryTests(TestCase):
@@ -40,9 +40,10 @@ class DuplicateAggregationQueryTests(TestCase):
             ]
         )
         display_movie = Movie.objects.select_related("item").filter(item=item).latest("id")
+        manager = MediaManager()
 
         with CaptureQueriesContext(connection) as queries:
-            result = Movie.objects._aggregate_duplicate_data(
+            result = manager._aggregate_duplicate_data(
                 [display_movie],
                 user,
                 MediaTypes.MOVIE.value,
