@@ -12,6 +12,7 @@ from django.utils import timezone
 
 from app import post_watch
 from app.models import (
+    TV,
     Episode,
     Item,
     MediaTypes,
@@ -20,7 +21,6 @@ from app.models import (
     PostWatchDismissal,
     Season,
     Sources,
-    TV,
 )
 
 post_watch_migration = import_module("app.migrations.0179_postwatchdismissal")
