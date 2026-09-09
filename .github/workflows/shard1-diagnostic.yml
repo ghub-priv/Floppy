@@ -103,10 +103,11 @@ jobs:
       - name: Run shard 1 serially with diagnostics
         run: |
           mapfile -t TESTS < full-tests.txt
-          .venv/bin/python -X faulthandler -c '
+          cd src
+          ../.venv/bin/python -X faulthandler -c '
           import faulthandler
           import runpy
 
           faulthandler.dump_traceback_later(600, repeat=True)
-          runpy.run_path("src/manage.py", run_name="__main__")
+          runpy.run_path("manage.py", run_name="__main__")
           ' test "${TESTS[@]}" --parallel 1 --verbosity 2 --exclude-tag network
