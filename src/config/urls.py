@@ -67,6 +67,7 @@ urlpatterns = [
     path("", include("app.kodi_library_urls")),
     path("", include("app.kodi_runtime_urls")),
     path("", include("app.discover_explore_urls")),
+    path("", include("app.post_watch_urls")),
     path("", include("app.urls")),
     path("", include("integrations.urls")),
     path("", include("users.urls")),

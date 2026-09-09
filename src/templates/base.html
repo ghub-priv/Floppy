@@ -367,6 +367,8 @@
                     </a>
                   </li>
 
+                  {% include "app/components/local_tool_nav.html" %}
+
                   {% url 'tag_index' as tag_index_url %}
                   <li>
                     <a href="{{ tag_index_url }}"
