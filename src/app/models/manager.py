@@ -774,7 +774,9 @@ class MediaManager(models.Manager):
                 # instantiation time proportionally for large libraries.
                 episode_qs = episode_qs.only(
                     "id",
+                    "created_at",
                     "end_date",
+                    "score",
                     "status",
                     "related_season_id",
                     "item__id",
@@ -1259,7 +1261,9 @@ class MediaManager(models.Manager):
             filtered = []
             for media in media_list:
                 latest_status = getattr(media, "aggregated_status", None) or getattr(
-                    media, "status", None
+                    media,
+                    "status",
+                    None,
                 )
                 if latest_status == desired_status:
                     filtered.append(media)
@@ -1277,7 +1281,8 @@ class MediaManager(models.Manager):
             )
             in_progress_list = list(in_progress_list)
             in_progress_list = filter_by_latest_status(
-                in_progress_list, Status.IN_PROGRESS.value
+                in_progress_list,
+                Status.IN_PROGRESS.value,
             )
 
             # Get planned items if needed
@@ -1290,7 +1295,8 @@ class MediaManager(models.Manager):
                     sort_filter=None,
                 )
                 planned_list = filter_by_latest_status(
-                    list(planned_queryset), Status.PLANNING.value
+                    list(planned_queryset),
+                    Status.PLANNING.value,
                 )
 
             # Handle different modes
@@ -1372,12 +1378,13 @@ class MediaManager(models.Manager):
                         self._fix_missing_season_images(in_progress_processed)
 
                     sorted_in_progress = self._sort_in_progress_media(
-                        in_progress_processed, sort_by
+                        in_progress_processed,
+                        sort_by,
                     )
                     total_in_progress = len(sorted_in_progress)
 
                     if specific_media_type and specific_media_type.endswith(
-                        "_in_progress"
+                        "_in_progress",
                     ):
                         paginated_in_progress = sorted_in_progress[items_limit:]
                     else:
@@ -1400,7 +1407,8 @@ class MediaManager(models.Manager):
                         self._fix_missing_season_images(planned_processed)
 
                     sorted_planned = self._sort_in_progress_media(
-                        planned_processed, sort_by
+                        planned_processed,
+                        sort_by,
                     )
                     total_planned = len(sorted_planned)
 
@@ -1702,7 +1710,8 @@ class MediaManager(models.Manager):
                     else:
                         # Fall back to database annotation if metadata doesn't have max_progress
                         self._annotate_season_released_episodes(
-                            [season], current_datetime
+                            [season],
+                            current_datetime,
                         )
                 except Exception:
                     # If metadata fetch fails, fall back to database annotation
