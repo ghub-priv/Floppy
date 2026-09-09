@@ -92,60 +92,54 @@ These customisations have already been moved from runtime patching into source-n
 | Music History cache-on-commit | integrated |
 | Music History current-day relations fix | integrated |
 | Kodi JSON-RPC / foundation work | integrated |
+| Explore Movies / Explore TV Shows | source-native parity integrated |
+| Fast IMDb import lookup cache | integrated |
+| Duplicate aggregation performance optimisation | integrated |
+| Redis hardening parity | current source retained as superior to r13 override |
+| Kodi Control + Sync | v2.7 |
 | Patch regression coverage for the above | integrated |
 
-The old runtime patch harness is useful as historical evidence while porting, but the objective is to remove the need for runtime patch injection altogether.
+The aggregate local-patchset parity work is now complete for the accepted Explore, IMDb and duplicate-aggregation behaviour. The old Redis runtime override was deliberately not restored because current Floppy already contains a more complete source-native Redis tuning implementation.
+
+Kodi Control + Sync v2.7 is also now integrated. Its source-native implementation includes Kodi playback event handling, durable progress checkpoints, deferred exact-item resume, authenticated playback controls, rating/playback isolation, completed-season replay safeguards, Kodi-owned Now Playing provenance and Play in Kodi actions while reusing current Floppy's shared playback and provider-resolution architecture.
+
+The old runtime patch harness remains useful as historical evidence while porting, but the objective is to remove the need for runtime patch injection altogether.
 
 ### Currently being ported / reviewed
 
-#### Kodi Control + Sync v2.7
-
-Active PR: **#5**
-
-This is one of the larger ports because it touches playback, watched-state processing, ratings, durable resume state, Kodi JSON-RPC control and shared Now Playing state.
-
-The source-native port preserves the accepted behaviour while adapting it to current Floppy architecture, including:
-
-- `start`, `pause`, `resume`, `seek`, `interval`, `stop` and `end` events;
-- cache-only interval heartbeats so Kodi does not write playback progress to SQLite every few seconds;
-- durable progress checkpoints on pause, seek, stop and end;
-- deferred exact-item resume after TMDb Helper resolves the actual stream;
-- authenticated pause/resume/stop and ±30 second seek controls;
-- watched completion at the accepted Kodi threshold;
-- protection against partial replays reopening completed seasons;
-- movie and episode rating handling isolated from playback/history processing;
-- episode rating writes that avoid `Episode.save()` watch-state side effects;
-- Kodi-owned playback provenance so Kodi controls/reconciliation can never act on Plex or Jellyfin sessions;
-- conservative cold/stale Now Playing reconciliation;
-- source-native **Play in Kodi** actions for movies, shows, seasons and episodes.
-
-The port deliberately reuses current Floppy's shared playback/progress and provider-resolution systems rather than restoring obsolete r13 copies of them.
-
 #### Post-Watch Workflow v1.1.0
 
-A separate source-port PR exists for the Post-Watch workflow. Its regression work includes repeated-play deduplication, dropped-episode handling, safe nullable episode handling, legacy dismissal-key migration and backfilling older movie watch records where necessary.
+Active PR: **#4**
 
-It remains separate from Kodi so the two substantial behavioural changes can be reviewed and validated independently.
+The source-native Post-Watch port currently covers:
+
+- a managed `PostWatchDismissal` model with migration of legacy runtime data;
+- a seven-day recent-unrated movie and episode inbox;
+- per-watch dismissals;
+- rating using the configured Floppy score scale;
+- exact watched-date correction with History cache invalidation;
+- Smart Watched Date suggestions for movies;
+- episode Air Date suggestions;
+- Next Episode navigation;
+- dedicated routes, templates, admin coverage and regression tests.
+
+PR #4 remains intentionally separate so its tracking, dismissal and watched-date behaviour can be reconciled against the current integration baseline and validated independently.
 
 ---
 
 ## Remaining r13 work
 
-The r13 baseline contains additional accepted customisations still to be reconciled with current source. The rough dependency order is intentional because several later features depend on earlier ones.
-
-### Local patchset parity
-
-After Kodi Control + Sync, remaining pieces from the aggregate local patchset will be reviewed individually. These include older Explore/IMDb/duplicate-aggregation behaviour where it is still missing from current Floppy.
+The r13 baseline still contains accepted customisations that need to be reconciled with current source. The rough dependency order is intentional because later features depend on earlier source-native integration work.
 
 ### Integration Health Centre
 
 The original Integration Health Centre provided read-only diagnostics for services such as Kodi, MDBList, TMDb, Redis, Celery and the database.
 
-Its source port will be adapted to the new architecture. In particular, the old runtime-patch-harness health check does not make sense once these features live natively in source and must be replaced rather than copied.
+Its source port will be adapted to the new architecture. In particular, the old runtime-patch-harness health check no longer makes sense once these features live natively in source and must be replaced rather than copied.
 
 ### Rating Intelligence
 
-The accepted Rating Intelligence work is split into core and advanced layers. It depends on the local-patchset/health work, so it comes later rather than being copied ahead of its dependencies.
+The accepted Rating Intelligence work is split into core and advanced layers. It will be ported after the health/integration layer is stable so it can build on the final source-native rating and integration architecture rather than historical runtime hooks.
 
 ### OAuth / integration security
 
@@ -166,7 +160,7 @@ The remaining baseline also includes features such as:
 
 - Umbrella API performance work;
 - additional integration/API changes;
-- remaining aggregate local-patchset behaviour.
+- any residual cumulative-patch behaviour that is not already superseded by current source.
 
 Each will receive the same source-review and regression process instead of wholesale file replacement.
 
@@ -255,4 +249,4 @@ The immediate objective is simple:
 
 > **Finish converting the accepted r13 runtime patch stack into a clean, tested, source-native Floppy build with no patch-overlay dependency.**
 
-Once that is complete, `chris/integration` becomes the reproducible source of truth for our customised Floppy installation rather than `/opt/floppy/patches/` and a collection of container overlays.
+The next active port is **Post-Watch Workflow v1.1.0**. Once the remaining accepted r13 work is complete, `chris/integration` becomes the reproducible source of truth for our customised Floppy installation rather than `/opt/floppy/patches/` and a collection of container overlays.
