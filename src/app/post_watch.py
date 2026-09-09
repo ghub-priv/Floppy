@@ -29,6 +29,7 @@ from app.models import (
     Sources,
 )
 from app.providers import tmdb
+from app.services import metadata_resolution
 from app.smart_watched_dates import suggestions_for_media
 
 logger = logging.getLogger(__name__)
@@ -315,17 +316,14 @@ def _movie_date_suggestions(movie: Movie, user) -> list[dict[str, str]]:
     if item.source != Sources.TMDB.value:
         return suggestions
 
-    preferred_region = str(
-        getattr(user, "preferred_region", "")
-        or getattr(user, "country", "")
-        or ""
-    )
+    preferred_region = str(getattr(user, "watch_provider_region", "") or "")
     try:
         values = suggestions_for_media(
             source=item.source,
             media_type=MediaTypes.MOVIE.value,
             media_id=item.media_id,
             preferred_region=preferred_region,
+            language=metadata_resolution.metadata_language_default(user),
         )
     except (
         providers.services.ProviderAPIError,
@@ -532,6 +530,7 @@ def _datetime_on_selected_date(value: str, original):
 @login_required
 @require_GET
 def post_watch(request):
+    """Render the recent unrated Post-Watch inbox."""
     cards = build_post_watch_cards(request.user)
     return render(
         request,
@@ -547,6 +546,7 @@ def post_watch(request):
 @login_required
 @require_POST
 def post_watch_dismiss(request):
+    """Dismiss one concrete watch from the current user's inbox."""
     watch_key = str(request.POST.get("watch_key") or "").strip()
     _kind, watch = _lookup_watch(request.user, watch_key)
     if watch is None:
@@ -558,6 +558,7 @@ def post_watch_dismiss(request):
 @login_required
 @require_POST
 def post_watch_rate(request):
+    """Rate one Post-Watch item using the user's configured score scale."""
     watch_key = str(request.POST.get("watch_key") or "").strip()
     kind, watch = _lookup_watch(request.user, watch_key)
     if watch is None:
@@ -587,6 +588,7 @@ def post_watch_rate(request):
 @login_required
 @require_POST
 def post_watch_update_date(request):
+    """Update the watched date for one concrete Post-Watch entry."""
     watch_key = str(request.POST.get("watch_key") or "").strip()
     kind, watch = _lookup_watch(request.user, watch_key)
     if watch is None:
