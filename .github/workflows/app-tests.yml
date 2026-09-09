@@ -158,6 +158,9 @@ jobs:
       - name: Install test dependencies
         run: uv sync --locked --no-default-groups --group test
 
+      - name: Install Playwright Chromium
+        run: uv run --no-sync playwright install --with-deps chromium
+
       - name: Set test environment
         run: |
           if [ -n "${{ secrets.SECRET }}" ]; then echo "SECRET=${{ secrets.SECRET }}" >> "$GITHUB_ENV"; fi
@@ -223,12 +226,19 @@ jobs:
       - name: Run full regression shard
         env:
           WITH_COVERAGE: ${{ github.event_name == 'push' }}
+          SHARD: ${{ matrix.shard }}
         run: |
           mapfile -t TESTS < full-tests.txt
-          if [ "$WITH_COVERAGE" = "true" ]; then
-            uv run --no-sync coverage run src/manage.py test "${TESTS[@]}" --parallel --exclude-tag network
+          if [ "$SHARD" = "1" ]; then
+            PARALLEL_ARGS=(--parallel 1)
           else
-            uv run --no-sync python src/manage.py test "${TESTS[@]}" --parallel --exclude-tag network
+            PARALLEL_ARGS=(--parallel)
+          fi
+
+          if [ "$WITH_COVERAGE" = "true" ]; then
+            uv run --no-sync coverage run src/manage.py test "${TESTS[@]}" "${PARALLEL_ARGS[@]}" --exclude-tag network
+          else
+            uv run --no-sync python src/manage.py test "${TESTS[@]}" "${PARALLEL_ARGS[@]}" --exclude-tag network
           fi
 
       - name: Build coverage report

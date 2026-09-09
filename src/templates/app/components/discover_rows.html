@@ -1,6 +1,27 @@
-
 {% load i18n %}
 {% load app_tags %}
+
+{% if selected_media_type == "movie" %}
+  <div id="discover-explore-shell"
+       class="mb-8"
+       hx-get="{% url 'discover_explore' %}"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    <div class="rounded-lg border border-gray-700 bg-[var(--color-surface)] p-6 text-center text-sm text-[var(--color-text-muted)]">
+      {% translate "Loading movie explorer…" %}
+    </div>
+  </div>
+{% elif selected_media_type == "tv" %}
+  <div id="discover-explore-tv-shell"
+       class="mb-8"
+       hx-get="{% url 'discover_explore_tv' %}"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    <div class="rounded-lg border border-gray-700 bg-[var(--color-surface)] p-6 text-center text-sm text-[var(--color-text-muted)]">
+      {% translate "Loading TV explorer…" %}
+    </div>
+  </div>
+{% endif %}
 
 {% if selected_media_type == "hidden" %}
   <div class="space-y-6">

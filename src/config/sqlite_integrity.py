@@ -891,7 +891,17 @@ def create_live_database_snapshot(
             max_keep=max_keep,
             timeout_seconds=timeout_seconds,
         )
-    except (OSError, sqlite3.DatabaseError, ValueError) as error:
+    except sqlite3.DatabaseError as error:
+        _log(f"[db-snapshot] Could not write a database snapshot: {error}")
+        error_code = getattr(error, "sqlite_errorcode", None)
+        is_corruption = error_code in {
+            sqlite3.SQLITE_CORRUPT,
+            sqlite3.SQLITE_NOTADB,
+        }
+        if is_corruption or str(error) == "snapshot quick_check did not return 'ok'":
+            _report_corruption(db_path, str(error))
+        return None
+    except (OSError, ValueError) as error:
         _log(f"[db-snapshot] Could not write a database snapshot: {error}")
         return None
 
