@@ -1,32 +1,35 @@
-{% load i18n %}
+{% load i18n kodi_tags %}
+{% kodi_playback_available as kodi_available %}
 
-<form id="{{ kodi_form_id }}"
-      method="post"
-      hx-post="{% url 'kodi_play' %}"
-      hx-target="#{{ kodi_status_id }}"
-      hx-swap="innerHTML"
-      class="flex w-full flex-wrap items-center gap-3 sm:w-auto">
-  {% csrf_token %}
+{% if kodi_available %}
+  <form id="{{ kodi_form_id }}"
+        method="post"
+        hx-post="{% url 'kodi_play' %}"
+        hx-target="#{{ kodi_status_id }}"
+        hx-swap="innerHTML"
+        class="flex w-full flex-wrap items-center gap-3 sm:w-auto">
+    {% csrf_token %}
 
-  <input type="hidden" name="source" value="{{ kodi_source }}">
-  <input type="hidden" name="media_type" value="{{ kodi_media_type }}">
-  <input type="hidden" name="media_id" value="{{ kodi_media_id }}">
+    <input type="hidden" name="source" value="{{ kodi_source }}">
+    <input type="hidden" name="media_type" value="{{ kodi_media_type }}">
+    <input type="hidden" name="media_id" value="{{ kodi_media_id }}">
 
-  {% if kodi_include_season %}
-    <input type="hidden" name="season_number" value="{{ kodi_season_number }}">
-  {% endif %}
-  {% if kodi_include_episode %}
-    <input type="hidden" name="episode_number" value="{{ kodi_episode_number }}">
-  {% endif %}
+    {% if kodi_include_season %}
+      <input type="hidden" name="season_number" value="{{ kodi_season_number }}">
+    {% endif %}
+    {% if kodi_include_episode %}
+      <input type="hidden" name="episode_number" value="{{ kodi_episode_number }}">
+    {% endif %}
 
-  <button type="submit"
-          hx-disabled-elt="this"
-          class="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-medium text-white shadow-sm transition duration-300 hover:bg-indigo-700 disabled:cursor-wait disabled:opacity-60 sm:w-auto">
-    <span aria-hidden="true">▶</span>
-    <span>{% translate "Play in Kodi" %}</span>
-  </button>
+    <button type="submit"
+            hx-disabled-elt="this"
+            class="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-medium text-white shadow-sm transition duration-300 hover:bg-indigo-700 disabled:cursor-wait disabled:opacity-60 sm:w-auto">
+      <span aria-hidden="true">▶</span>
+      <span>{% translate "Play in Kodi" %}</span>
+    </button>
 
-  <span id="{{ kodi_status_id }}"
-        class="min-h-[1.25rem]"
-        aria-live="polite"></span>
-</form>
+    <span id="{{ kodi_status_id }}"
+          class="min-h-[1.25rem]"
+          aria-live="polite"></span>
+  </form>
+{% endif %}
