@@ -5,13 +5,12 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import timedelta
-from typing import Self
 
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from integrations.models import DEFAULT_INTEGRATION_SCOPES
+from integrations.models import DEFAULT_INTEGRATION_SCOPES, IntegrationToken
 
 OAUTH_DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 OAUTH_REFRESH_TOKEN_GRANT = "refresh_token"
@@ -81,7 +80,7 @@ class OAuthClient(models.Model):
         allowed_scopes: list[str] | None = None,
         grant_types: list[str] | None = None,
         client_type: str = "public",
-    ) -> Self:
+    ) -> OAuthClient:
         """Register a public OAuth client with explicit scope/grant restrictions."""
         if client_type != "public":
             msg = "Floppy currently supports public OAuth clients only."
@@ -130,10 +129,19 @@ class OAuthClient(models.Model):
         return self.is_active and grant_type in self.grant_types
 
     def revoke(self) -> None:
-        """Revoke the client registration."""
+        """Revoke the client and every OAuth credential issued through it."""
+        revoked_at = self.revoked_at or timezone.now()
         if self.revoked_at is None:
-            self.revoked_at = timezone.now()
+            self.revoked_at = revoked_at
             self.save(update_fields=["revoked_at"])
+
+        self.refresh_tokens.filter(revoked_at__isnull=True).update(
+            revoked_at=revoked_at
+        )
+        IntegrationToken.objects.filter(
+            client_identifier=self.client_id,
+            revoked_at__isnull=True,
+        ).update(revoked_at=revoked_at)
 
 
 class OAuthDeviceAuthorization(models.Model):
@@ -180,7 +188,7 @@ class OAuthDeviceAuthorization(models.Model):
         *,
         client: OAuthClient,
         requested_scopes: list[str],
-    ) -> tuple[Self, str, str]:
+    ) -> tuple[OAuthDeviceAuthorization, str, str]:
         """Create an authorisation while storing only digests of its raw codes."""
         raw_device_code = f"flp_device_{secrets.token_urlsafe(32)}"
         raw_user_code = "".join(
@@ -198,7 +206,10 @@ class OAuthDeviceAuthorization(models.Model):
         return authorization, raw_device_code, display_user_code
 
     @classmethod
-    def for_user_code(cls, raw_user_code: str) -> Self | None:
+    def for_user_code(
+        cls,
+        raw_user_code: str,
+    ) -> OAuthDeviceAuthorization | None:
         """Resolve a human user code without storing the plaintext value."""
         normalized = normalise_user_code(raw_user_code)
         if not normalized:
@@ -290,7 +301,7 @@ class OAuthRefreshToken(models.Model):
         client: OAuthClient,
         access_token: models.Model,
         scopes: list[str],
-    ) -> tuple[Self, str]:
+    ) -> tuple[OAuthRefreshToken, str]:
         """Create a digest-only rotating refresh credential."""
         raw_token = f"flp_refresh_{secrets.token_urlsafe(40)}"
         refresh_token = cls.objects.create(
