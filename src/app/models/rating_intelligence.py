@@ -16,4 +16,5 @@ class RatingIntelligencePreference(models.Model):
     pri_colour_caution = models.CharField(max_length=7, default="#fbbf24")
 
     def __str__(self):
+        """Return a human-readable description of the preference row."""
         return f"Rating Intelligence preferences for {self.user}"

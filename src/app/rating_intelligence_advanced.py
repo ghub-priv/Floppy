@@ -34,22 +34,72 @@ CACHE_SECONDS = 900
 RIDGE_LAMBDA = 18.0
 RIDGE_MAX_ITER = 250
 RIDGE_TOLERANCE = 1e-5
+MIN_PAIR_SAMPLES = 2
+MIN_TV_VALIDATION_SAMPLES = 20
+HIGH_RATING_THRESHOLD = 7.0
 
 MOVIE_FAMILY_CONFIG = {
-    "genres": {"label": "Genres", "min_samples": 20, "description": "Shows which genres you tend to rate higher or lower than expected once public ratings and the other known details about a film are taken into account."},
-    "decades": {"label": "Decades", "min_samples": 20, "description": "Shows whether films from particular decades tend to work better or worse for you than expected."},
-    "directors": {"label": "Directors", "min_samples": 4, "description": "Shows which directors are linked with you rating films higher or lower than expected. Only actual director credits are counted."},
-    "lead_cast": {"label": "Lead cast", "min_samples": 5, "description": "Shows which frequently seen lead actors are linked with you rating films higher or lower than expected."},
-    "studios": {"label": "Studios", "min_samples": 10, "description": "Shows whether films from particular production companies tend to score better or worse with you than expected."},
-    "collections": {"label": "Collections / franchises", "min_samples": 4, "description": "Shows whether films in a franchise or collection tend to work better or worse for you than expected."},
+    "genres": {
+        "label": "Genres",
+        "min_samples": 20,
+        "description": "Shows which genres you tend to rate higher or lower than expected once public ratings and the other known details about a film are taken into account.",
+    },
+    "decades": {
+        "label": "Decades",
+        "min_samples": 20,
+        "description": "Shows whether films from particular decades tend to work better or worse for you than expected.",
+    },
+    "directors": {
+        "label": "Directors",
+        "min_samples": 4,
+        "description": "Shows which directors are linked with you rating films higher or lower than expected. Only actual director credits are counted.",
+    },
+    "lead_cast": {
+        "label": "Lead cast",
+        "min_samples": 5,
+        "description": "Shows which frequently seen lead actors are linked with you rating films higher or lower than expected.",
+    },
+    "studios": {
+        "label": "Studios",
+        "min_samples": 10,
+        "description": "Shows whether films from particular production companies tend to score better or worse with you than expected.",
+    },
+    "collections": {
+        "label": "Collections / franchises",
+        "min_samples": 4,
+        "description": "Shows whether films in a franchise or collection tend to work better or worse for you than expected.",
+    },
 }
-MOVIE_DISPLAY_FAMILY_ORDER = ("genres", "decades", "directors", "lead_cast", "studios", "collections")
+MOVIE_DISPLAY_FAMILY_ORDER = (
+    "genres",
+    "decades",
+    "directors",
+    "lead_cast",
+    "studios",
+    "collections",
+)
 
 TV_FAMILY_CONFIG = {
-    "genres": {"label": "Genres", "min_samples": 10, "description": "Shows which TV genres you tend to rate higher or lower than expected. Each show counts once, regardless of how many episodes it has."},
-    "decades": {"label": "Decades", "min_samples": 10, "description": "Shows whether TV from particular decades tends to work better or worse for you than expected."},
-    "lead_cast": {"label": "Lead cast", "min_samples": 3, "description": "Shows which frequently seen lead actors are linked with you rating TV shows higher or lower than expected. Shows with only a few rated episodes are treated cautiously."},
-    "studios": {"label": "Studios", "min_samples": 5, "description": "Shows whether TV programmes from particular production companies tend to score better or worse with you than expected."},
+    "genres": {
+        "label": "Genres",
+        "min_samples": 10,
+        "description": "Shows which TV genres you tend to rate higher or lower than expected. Each show counts once, regardless of how many episodes it has.",
+    },
+    "decades": {
+        "label": "Decades",
+        "min_samples": 10,
+        "description": "Shows whether TV from particular decades tends to work better or worse for you than expected.",
+    },
+    "lead_cast": {
+        "label": "Lead cast",
+        "min_samples": 3,
+        "description": "Shows which frequently seen lead actors are linked with you rating TV shows higher or lower than expected. Shows with only a few rated episodes are treated cautiously.",
+    },
+    "studios": {
+        "label": "Studios",
+        "min_samples": 5,
+        "description": "Shows whether TV programmes from particular production companies tend to score better or worse with you than expected.",
+    },
 }
 TV_DISPLAY_FAMILY_ORDER = ("genres", "decades", "lead_cast", "studios")
 
@@ -61,10 +111,32 @@ VALIDATION_SNAPSHOT = {
     "rated_titles": 5230,
     "folds": 5,
     "source": "frozen-movie-v2.0.0",
-    "public": {"label": "Public rating only", "rmse": 1.498672, "mae": 1.087389, "pearson": 0.278929, "top_decile_7plus_pct": 56.597},
-    "personal": {"label": "Personal features only", "rmse": 1.459891, "mae": 1.062819, "pearson": 0.353790, "top_decile_7plus_pct": 45.315},
-    "hybrid": {"label": "Advanced hybrid", "rmse": 1.415312, "mae": 1.029680, "pearson": 0.421729, "top_decile_7plus_pct": 61.185},
-    "interactions": {"rmse": 1.414384, "gain_vs_hybrid": 0.000928, "decision": "Deferred: negligible predictive gain for extra complexity."},
+    "public": {
+        "label": "Public rating only",
+        "rmse": 1.498672,
+        "mae": 1.087389,
+        "pearson": 0.278929,
+        "top_decile_7plus_pct": 56.597,
+    },
+    "personal": {
+        "label": "Personal features only",
+        "rmse": 1.459891,
+        "mae": 1.062819,
+        "pearson": 0.353790,
+        "top_decile_7plus_pct": 45.315,
+    },
+    "hybrid": {
+        "label": "Advanced hybrid",
+        "rmse": 1.415312,
+        "mae": 1.029680,
+        "pearson": 0.421729,
+        "top_decile_7plus_pct": 61.185,
+    },
+    "interactions": {
+        "rmse": 1.414384,
+        "gain_vs_hybrid": 0.000928,
+        "decision": "Deferred: negligible predictive gain for extra complexity.",
+    },
 }
 
 
@@ -74,6 +146,7 @@ def _cache_key(user_id, media_kind="movies"):
 
 
 def invalidate_advanced_rating_intelligence_cache(user_id):
+    """Invalidate all cached Advanced Rating Intelligence profiles for a user."""
     cache.delete(_cache_key(user_id, "movies"))
     cache.delete(_cache_key(user_id, "tv"))
     cache.delete(_cache_key(user_id, "combined"))
@@ -84,16 +157,28 @@ def _clamp(value, lo=1.0, hi=10.0):
 
 
 def _public_calibration(samples):
-    pairs = [(s["world_score"], s["rating"]) for s in samples if s["world_score"] is not None]
+    pairs = [
+        (s["world_score"], s["rating"]) for s in samples if s["world_score"] is not None
+    ]
     fallback = mean(s["rating"] for s in samples) if samples else 0.0
-    if len(pairs) < 2:
-        return {"slope": 0.0, "intercept": fallback, "fallback": fallback, "sample_size": len(pairs)}
+    if len(pairs) < MIN_PAIR_SAMPLES:
+        return {
+            "slope": 0.0,
+            "intercept": fallback,
+            "fallback": fallback,
+            "sample_size": len(pairs),
+        }
     xs = [x for x, _ in pairs]
     ys = [y for _, y in pairs]
     mx, my = mean(xs), mean(ys)
     denom = sum((x - mx) ** 2 for x in xs)
     slope = sum((x - mx) * (y - my) for x, y in pairs) / denom if denom else 0.0
-    return {"slope": slope, "intercept": my - slope * mx, "fallback": fallback, "sample_size": len(pairs)}
+    return {
+        "slope": slope,
+        "intercept": my - slope * mx,
+        "fallback": fallback,
+        "sample_size": len(pairs),
+    }
 
 
 def _public_prediction(calibration, sample):
@@ -109,7 +194,11 @@ def _world_score(item):
         trakt_rating=getattr(item, "trakt_rating", None),
         trakt_votes=getattr(item, "trakt_rating_count", None),
     )
-    return None if world.get("world_source_blend") == "neutral" else float(world["world_quality"]) * 10.0
+    return (
+        None
+        if world.get("world_source_blend") == "neutral"
+        else float(world["world_quality"]) * 10.0
+    )
 
 
 def _build_samples(user, media_kind="movies"):
@@ -126,26 +215,40 @@ def _build_samples(user, media_kind="movies"):
             item_id = entry["item_id"]
             families = {
                 "genres": normalize_features(item.genres or [], normalize_person_name),
-                "decades": normalize_features([release_decade_label(item.release_datetime)], normalize_person_name),
+                "decades": normalize_features(
+                    [release_decade_label(item.release_datetime)], normalize_person_name
+                ),
                 "lead_cast": lead_cast_map.get(item_id, []),
-                "studios": studios_map.get(item_id) or normalize_features(item.studios or [], normalize_studio),
+                "studios": studios_map.get(item_id)
+                or normalize_features(item.studios or [], normalize_studio),
             }
-            features = {f"{family}:{label}" for family, labels in families.items() for label in labels}
-            samples.append({
-                "item_id": item_id,
-                "title": entry["title"],
-                # Confidence-adjusted target prevents a one-episode 10/10 from
-                # carrying the same certainty as a fully rated limited series.
-                "rating": float(entry["adjusted_rating"]),
-                "observed_rating": float(entry["raw_rating"]),
-                "world_score": _world_score(item),
-                "features": features,
-                "rated_episodes": entry["rated_episodes"],
-                "total_episodes": entry["total_episodes"],
-                "coverage_pct": entry["coverage_pct"],
-                "confidence": entry["confidence"],
-            })
-        return tv_data["source_rated_rows"], tv_data["deduplicated_rated_rows"], samples, tv_data
+            features = {
+                f"{family}:{label}"
+                for family, labels in families.items()
+                for label in labels
+            }
+            samples.append(
+                {
+                    "item_id": item_id,
+                    "title": entry["title"],
+                    # Confidence-adjusted target prevents a one-episode 10/10 from
+                    # carrying the same certainty as a fully rated limited series.
+                    "rating": float(entry["adjusted_rating"]),
+                    "observed_rating": float(entry["raw_rating"]),
+                    "world_score": _world_score(item),
+                    "features": features,
+                    "rated_episodes": entry["rated_episodes"],
+                    "total_episodes": entry["total_episodes"],
+                    "coverage_pct": entry["coverage_pct"],
+                    "confidence": entry["confidence"],
+                }
+            )
+        return (
+            tv_data["source_rated_rows"],
+            tv_data["deduplicated_rated_rows"],
+            samples,
+            tv_data,
+        )
 
     source_rows, movies = _load_movies(user)
     item_ids = [movie.item_id for movie in movies]
@@ -157,22 +260,34 @@ def _build_samples(user, media_kind="movies"):
         item_id = movie.item_id
         families = {
             "genres": normalize_features(item.genres or [], normalize_person_name),
-            "decades": normalize_features([release_decade_label(item.release_datetime)], normalize_person_name),
+            "decades": normalize_features(
+                [release_decade_label(item.release_datetime)], normalize_person_name
+            ),
             "directors": directors_map.get(item_id, []),
             "lead_cast": lead_cast_map.get(item_id, []),
-            "studios": studios_map.get(item_id) or normalize_features(item.studios or [], normalize_studio),
-            "collections": normalize_features([item.provider_collection_name or item.provider_collection_id], normalize_collection),
+            "studios": studios_map.get(item_id)
+            or normalize_features(item.studios or [], normalize_studio),
+            "collections": normalize_features(
+                [item.provider_collection_name or item.provider_collection_id],
+                normalize_collection,
+            ),
         }
-        features = {f"{family}:{label}" for family, labels in families.items() for label in labels}
+        features = {
+            f"{family}:{label}"
+            for family, labels in families.items()
+            for label in labels
+        }
         rating = float(movie.score)
-        samples.append({
-            "item_id": item_id,
-            "title": item.title,
-            "rating": rating,
-            "observed_rating": rating,
-            "world_score": _world_score(item),
-            "features": features,
-        })
+        samples.append(
+            {
+                "item_id": item_id,
+                "title": item.title,
+                "rating": rating,
+                "observed_rating": rating,
+                "world_score": _world_score(item),
+                "features": features,
+            }
+        )
     return len(source_rows), len(source_rows) - len(samples), samples, None
 
 
@@ -200,7 +315,7 @@ def _fit_sparse_ridge(samples, targets, family_config):
     ordered = sorted(columns, key=lambda feature: (-len(columns[feature]), feature))
     intercept = mean(targets) if targets else 0.0
     residual = [target - intercept for target in targets]
-    weights = {feature: 0.0 for feature in ordered}
+    weights = dict.fromkeys(ordered, 0.0)
     converged = False
     final_max_delta = 0.0
     iterations = 0
@@ -247,7 +362,9 @@ def _family_cards(samples, model, calibration, family_config, family_order):
         residual = sample["rating"] - _public_prediction(calibration, sample)
         for feature in sample["features"]:
             if feature in model["allowed"]:
-                raw_ratings[feature].append(sample.get("observed_rating", sample["rating"]))
+                raw_ratings[feature].append(
+                    sample.get("observed_rating", sample["rating"])
+                )
                 raw_residuals[feature].append(residual)
 
     grouped = defaultdict(list)
@@ -255,42 +372,55 @@ def _family_cards(samples, model, calibration, family_config, family_order):
         family, label = feature.split(":", 1)
         ratings = raw_ratings.get(feature, [])
         residuals = raw_residuals.get(feature, [])
-        grouped[family].append({
-            "label": label,
-            "samples": len(ratings),
-            "mean_rating": round(mean(ratings), 4) if ratings else None,
-            "raw_public_residual": round(mean(residuals), 4) if residuals else None,
-            "adjustment": round(float(coefficient), 4),
-        })
+        grouped[family].append(
+            {
+                "label": label,
+                "samples": len(ratings),
+                "mean_rating": round(mean(ratings), 4) if ratings else None,
+                "raw_public_residual": round(mean(residuals), 4) if residuals else None,
+                "adjustment": round(float(coefficient), 4),
+            }
+        )
 
     cards = []
     for family in family_order:
         config = family_config[family]
         rows = grouped.get(family, [])
-        positive = sorted((r for r in rows if r["adjustment"] > 0), key=lambda r: (r["adjustment"], r["samples"]), reverse=True)[:20]
-        negative = sorted((r for r in rows if r["adjustment"] < 0), key=lambda r: (r["adjustment"], -r["samples"]))[:20]
-        cards.append({
-            "key": family,
-            "label": config["label"],
-            "description": config["description"],
-            "min_samples": config["min_samples"],
-            "feature_count": len(rows),
-            "modelled_rows": sorted(rows, key=lambda r: (r["label"], r["samples"])),
-            "positive": positive,
-            "negative": negative,
-        })
+        positive = sorted(
+            (r for r in rows if r["adjustment"] > 0),
+            key=lambda r: (r["adjustment"], r["samples"]),
+            reverse=True,
+        )[:20]
+        negative = sorted(
+            (r for r in rows if r["adjustment"] < 0),
+            key=lambda r: (r["adjustment"], -r["samples"]),
+        )[:20]
+        cards.append(
+            {
+                "key": family,
+                "label": config["label"],
+                "description": config["description"],
+                "min_samples": config["min_samples"],
+                "feature_count": len(rows),
+                "modelled_rows": sorted(rows, key=lambda r: (r["label"], r["samples"])),
+                "positive": positive,
+                "negative": negative,
+            }
+        )
     return cards
 
 
 def _predict_personal(model, sample):
-    return model["intercept"] + sum(model["weights"].get(feature, 0.0) for feature in sample["features"])
+    return model["intercept"] + sum(
+        model["weights"].get(feature, 0.0) for feature in sample["features"]
+    )
 
 
 def _pearson(actual, predicted):
-    if len(actual) < 2:
+    if len(actual) < MIN_PAIR_SAMPLES:
         return 0.0
     ma, mp = mean(actual), mean(predicted)
-    numerator = sum((a - ma) * (p - mp) for a, p in zip(actual, predicted))
+    numerator = sum((a - ma) * (p - mp) for a, p in zip(actual, predicted, strict=True))
     da = sum((a - ma) ** 2 for a in actual)
     dp = sum((p - mp) ** 2 for p in predicted)
     denominator = math.sqrt(da * dp)
@@ -299,16 +429,29 @@ def _pearson(actual, predicted):
 
 def _metrics(actual, predicted, label):
     if not actual:
-        return {"label": label, "rmse": 0.0, "mae": 0.0, "pearson": 0.0, "top_decile_7plus_pct": 0.0}
-    errors = [a - p for a, p in zip(actual, predicted)]
+        return {
+            "label": label,
+            "rmse": 0.0,
+            "mae": 0.0,
+            "pearson": 0.0,
+            "top_decile_7plus_pct": 0.0,
+        }
+    errors = [a - p for a, p in zip(actual, predicted, strict=True)]
     top_n = max(1, math.ceil(len(actual) * 0.10))
-    top_indexes = sorted(range(len(predicted)), key=lambda i: predicted[i], reverse=True)[:top_n]
+    top_indexes = sorted(
+        range(len(predicted)), key=lambda i: predicted[i], reverse=True
+    )[:top_n]
     return {
         "label": label,
         "rmse": round(math.sqrt(mean(error * error for error in errors)), 6),
         "mae": round(mean(abs(error) for error in errors), 6),
         "pearson": round(_pearson(actual, predicted), 6),
-        "top_decile_7plus_pct": round(sum(actual[i] >= 7.0 for i in top_indexes) / len(top_indexes) * 100.0, 3),
+        "top_decile_7plus_pct": round(
+            sum(actual[i] >= HIGH_RATING_THRESHOLD for i in top_indexes)
+            / len(top_indexes)
+            * 100.0,
+            3,
+        ),
     }
 
 
@@ -319,10 +462,12 @@ def _cross_validate(samples, family_config, folds=5):
     target construction, so reporting movie validation numbers would be
     misleading. This computes out-of-sample metrics from the current TV data.
     """
-    if len(samples) < 20:
+    if len(samples) < MIN_TV_VALIDATION_SAMPLES:
         return None
     folds = min(folds, max(2, len(samples) // 4))
-    ordered = sorted(samples, key=lambda sample: (str(sample["item_id"]), sample.get("title", "")))
+    ordered = sorted(
+        samples, key=lambda sample: (str(sample["item_id"]), sample.get("title", ""))
+    )
     actual, public_pred, personal_pred, hybrid_pred = [], [], [], []
 
     for fold in range(folds):
@@ -332,8 +477,13 @@ def _cross_validate(samples, family_config, folds=5):
             continue
 
         calibration = _public_calibration(train)
-        personal_model = _fit_sparse_ridge(train, [sample["rating"] for sample in train], family_config)
-        residual_targets = [sample["rating"] - _public_prediction(calibration, sample) for sample in train]
+        personal_model = _fit_sparse_ridge(
+            train, [sample["rating"] for sample in train], family_config
+        )
+        residual_targets = [
+            sample["rating"] - _public_prediction(calibration, sample)
+            for sample in train
+        ]
         hybrid_model = _fit_sparse_ridge(train, residual_targets, family_config)
 
         for sample in test:
@@ -383,38 +533,65 @@ def _combine_advanced_family_cards(movie_profile, tv_profile):
             movie_adjustment = float(movie_row["adjustment"])
             tv_adjustment = float(tv_row["adjustment"])
             combined_adjustment = (movie_adjustment + tv_adjustment) / 2.0
-            same_direction = (movie_adjustment > 0 and tv_adjustment > 0) or (movie_adjustment < 0 and tv_adjustment < 0)
-            rows.append({
-                "label": label,
-                "movie_adjustment": round(movie_adjustment, 4),
-                "tv_adjustment": round(tv_adjustment, 4),
-                "combined_adjustment": round(combined_adjustment, 4),
-                "divergence": round(tv_adjustment - movie_adjustment, 4),
-                "absolute_divergence": round(abs(tv_adjustment - movie_adjustment), 4),
-                "movie_samples": movie_row["samples"],
-                "tv_samples": tv_row["samples"],
-                "same_direction": same_direction,
-                "opposite_direction": movie_adjustment * tv_adjustment < 0,
-            })
-        cards.append({
-            "key": family,
-            "label": movie_card.get("label") or tv_card.get("label") or family.title(),
-            "shared_values": len(rows),
-            "positive": sorted(
-                (r for r in rows if r["movie_adjustment"] > 0 and r["tv_adjustment"] > 0),
-                key=lambda r: (r["combined_adjustment"], r["movie_samples"] + r["tv_samples"]),
-                reverse=True,
-            )[:10],
-            "negative": sorted(
-                (r for r in rows if r["movie_adjustment"] < 0 and r["tv_adjustment"] < 0),
-                key=lambda r: (r["combined_adjustment"], -(r["movie_samples"] + r["tv_samples"])),
-            )[:10],
-            "divergent": sorted(
-                (r for r in rows if r["opposite_direction"]),
-                key=lambda r: (r["absolute_divergence"], r["movie_samples"] + r["tv_samples"]),
-                reverse=True,
-            )[:10],
-        })
+            same_direction = (movie_adjustment > 0 and tv_adjustment > 0) or (
+                movie_adjustment < 0 and tv_adjustment < 0
+            )
+            rows.append(
+                {
+                    "label": label,
+                    "movie_adjustment": round(movie_adjustment, 4),
+                    "tv_adjustment": round(tv_adjustment, 4),
+                    "combined_adjustment": round(combined_adjustment, 4),
+                    "divergence": round(tv_adjustment - movie_adjustment, 4),
+                    "absolute_divergence": round(
+                        abs(tv_adjustment - movie_adjustment), 4
+                    ),
+                    "movie_samples": movie_row["samples"],
+                    "tv_samples": tv_row["samples"],
+                    "same_direction": same_direction,
+                    "opposite_direction": movie_adjustment * tv_adjustment < 0,
+                }
+            )
+        cards.append(
+            {
+                "key": family,
+                "label": movie_card.get("label")
+                or tv_card.get("label")
+                or family.title(),
+                "shared_values": len(rows),
+                "positive": sorted(
+                    (
+                        r
+                        for r in rows
+                        if r["movie_adjustment"] > 0 and r["tv_adjustment"] > 0
+                    ),
+                    key=lambda r: (
+                        r["combined_adjustment"],
+                        r["movie_samples"] + r["tv_samples"],
+                    ),
+                    reverse=True,
+                )[:10],
+                "negative": sorted(
+                    (
+                        r
+                        for r in rows
+                        if r["movie_adjustment"] < 0 and r["tv_adjustment"] < 0
+                    ),
+                    key=lambda r: (
+                        r["combined_adjustment"],
+                        -(r["movie_samples"] + r["tv_samples"]),
+                    ),
+                )[:10],
+                "divergent": sorted(
+                    (r for r in rows if r["opposite_direction"]),
+                    key=lambda r: (
+                        r["absolute_divergence"],
+                        r["movie_samples"] + r["tv_samples"],
+                    ),
+                    reverse=True,
+                )[:10],
+            }
+        )
     return cards
 
 
@@ -440,8 +617,10 @@ def _compute_combined_advanced(user):
         "media_kind": "combined",
         "media_label": "Combined",
         "source_rows": movies.get("source_rows", 0) + tv.get("source_rows", 0),
-        "unique_rated_titles": movies.get("unique_rated_titles", 0) + tv.get("unique_rated_titles", 0),
-        "deduplicated_rows": movies.get("deduplicated_rows", 0) + tv.get("deduplicated_rows", 0),
+        "unique_rated_titles": movies.get("unique_rated_titles", 0)
+        + tv.get("unique_rated_titles", 0),
+        "deduplicated_rows": movies.get("deduplicated_rows", 0)
+        + tv.get("deduplicated_rows", 0),
         "model": None,
         "validation": None,
         "family_cards": [],
@@ -452,8 +631,12 @@ def _compute_combined_advanced(user):
             "movie_titles": movies.get("unique_rated_titles", 0),
             "tv_titles": tv.get("unique_rated_titles", 0),
             "rated_episodes": tv.get("tv_summary", {}).get("rated_episodes", 0),
-            "movie_features": movies.get("model", {}).get("feature_count", 0) if movies.get("model") else 0,
-            "tv_features": tv.get("model", {}).get("feature_count", 0) if tv.get("model") else 0,
+            "movie_features": movies.get("model", {}).get("feature_count", 0)
+            if movies.get("model")
+            else 0,
+            "tv_features": tv.get("model", {}).get("feature_count", 0)
+            if tv.get("model")
+            else 0,
             "movie_cv_mae_gain_pct": _mae_gain(movies.get("validation")),
             "tv_cv_mae_gain_pct": _mae_gain(tv.get("validation")),
             "shared_modelled_signals": shared,
@@ -463,6 +646,7 @@ def _compute_combined_advanced(user):
 
 
 def compute_advanced_rating_intelligence(user, media_kind="movies"):
+    """Compute an Advanced Rating Intelligence profile for the selected medium."""
     media_kind = _normalise_media_kind(media_kind)
     if media_kind == "combined":
         return _compute_combined_advanced(user)
@@ -471,7 +655,9 @@ def compute_advanced_rating_intelligence(user, media_kind="movies"):
     family_order = TV_DISPLAY_FAMILY_ORDER if is_tv else MOVIE_DISPLAY_FAMILY_ORDER
     source_rows, deduplicated_rows, samples, tv_data = _build_samples(user, media_kind)
 
-    validation = _cross_validate(samples, family_config) if is_tv else VALIDATION_SNAPSHOT
+    validation = (
+        _cross_validate(samples, family_config) if is_tv else VALIDATION_SNAPSHOT
+    )
     if not samples:
         return {
             "schema_version": ADVANCED_SCHEMA_VERSION,
@@ -489,18 +675,32 @@ def compute_advanced_rating_intelligence(user, media_kind="movies"):
         }
 
     calibration = _public_calibration(samples)
-    residual_targets = [sample["rating"] - _public_prediction(calibration, sample) for sample in samples]
+    residual_targets = [
+        sample["rating"] - _public_prediction(calibration, sample) for sample in samples
+    ]
     model = _fit_sparse_ridge(samples, residual_targets, family_config)
-    family_cards = _family_cards(samples, model, calibration, family_config, family_order)
+    family_cards = _family_cards(
+        samples, model, calibration, family_config, family_order
+    )
 
-    public_predictions = [_clamp(_public_prediction(calibration, sample)) for sample in samples]
+    public_predictions = [
+        _clamp(_public_prediction(calibration, sample)) for sample in samples
+    ]
     hybrid_predictions = []
     for sample in samples:
         personal_adjustment = _predict_personal(model, sample)
-        hybrid_predictions.append(_clamp(_public_prediction(calibration, sample) + personal_adjustment))
+        hybrid_predictions.append(
+            _clamp(_public_prediction(calibration, sample) + personal_adjustment)
+        )
 
-    public_mae = mean(abs(sample["rating"] - prediction) for sample, prediction in zip(samples, public_predictions))
-    hybrid_mae = mean(abs(sample["rating"] - prediction) for sample, prediction in zip(samples, hybrid_predictions))
+    public_mae = mean(
+        abs(sample["rating"] - prediction)
+        for sample, prediction in zip(samples, public_predictions, strict=True)
+    )
+    hybrid_mae = mean(
+        abs(sample["rating"] - prediction)
+        for sample, prediction in zip(samples, hybrid_predictions, strict=True)
+    )
 
     profile = {
         "schema_version": ADVANCED_SCHEMA_VERSION,
@@ -528,7 +728,9 @@ def compute_advanced_rating_intelligence(user, media_kind="movies"):
             "residual_intercept": round(model["intercept"], 6),
             "current_mean_abs_public_error": round(public_mae, 4),
             "current_mean_abs_hybrid_error": round(hybrid_mae, 4),
-            "target_label": "confidence-adjusted show rating" if is_tv else "movie rating",
+            "target_label": "confidence-adjusted show rating"
+            if is_tv
+            else "movie rating",
         },
         "family_cards": family_cards,
     }
@@ -543,6 +745,7 @@ def compute_advanced_rating_intelligence(user, media_kind="movies"):
 
 
 def get_advanced_rating_intelligence(user, force=False, media_kind="movies"):
+    """Return a cached Advanced profile, recomputing it when requested."""
     media_kind = _normalise_media_kind(media_kind)
     key = _cache_key(user.id, media_kind)
     if not force:
@@ -560,6 +763,7 @@ def get_advanced_rating_intelligence(user, force=False, media_kind="movies"):
 
 @login_required
 def advanced_rating_intelligence(request):
+    """Render the Advanced Rating Intelligence page."""
     media_kind = _normalise_media_kind(request.GET.get("media"))
     profile = get_advanced_rating_intelligence(request.user, media_kind=media_kind)
     validation = profile.get("validation")
@@ -572,7 +776,10 @@ def advanced_rating_intelligence(request):
     movie_validation_rows = []
     tv_validation_rows = []
     if media_kind == "combined":
-        for target, rows in ((profile.get("movies", {}).get("validation"), movie_validation_rows), (profile.get("tv", {}).get("validation"), tv_validation_rows)):
+        for target, rows in (
+            (profile.get("movies", {}).get("validation"), movie_validation_rows),
+            (profile.get("tv", {}).get("validation"), tv_validation_rows),
+        ):
             if target:
                 for key in ("public", "personal", "hybrid"):
                     row = dict(target[key])
@@ -602,6 +809,7 @@ def advanced_rating_intelligence(request):
 @login_required
 @require_POST
 def refresh_advanced_rating_intelligence(request):
+    """Force-recompute the selected Advanced Rating Intelligence profile."""
     media_kind = _normalise_media_kind(request.POST.get("media"))
     get_advanced_rating_intelligence(request.user, force=True, media_kind=media_kind)
     return redirect(f"{reverse('rating_intelligence_advanced')}?media={media_kind}")

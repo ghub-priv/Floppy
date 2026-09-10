@@ -8,7 +8,6 @@ from app.rating_intelligence_views import (
     rating_intelligence,
 )
 
-
 urlpatterns = [
     path(
         "rating-intelligence/",
