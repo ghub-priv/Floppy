@@ -11,23 +11,8 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
 from integrations.models import IntegrationToken
+from integrations.oauth_scope_info import OAUTH_SCOPE_OPTIONS as INTEGRATION_SCOPE_OPTIONS
 
-INTEGRATION_SCOPE_OPTIONS = (
-    ("catalog:read", "Catalog Read", "Read provider-backed catalogue metadata."),
-    ("progress:read", "Progress Read", "Read watch history and playback progress."),
-    ("progress:write", "Progress Write", "Update watched state and playback progress."),
-    (
-        "watchlist:read",
-        "Library State Read",
-        "Read tracked library state, collections and custom lists.",
-    ),
-    (
-        "watchlist:write",
-        "Library State Write",
-        "Change tracked library state, collections and custom lists.",
-    ),
-    ("scrobble:write", "Scrobble Write", "Submit playback and ListenBrainz events."),
-)
 _ALLOWED_SCOPES = frozenset(
     scope for scope, _label, _description in INTEGRATION_SCOPE_OPTIONS
 )
