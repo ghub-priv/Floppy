@@ -10,7 +10,7 @@ from django.http import HttpRequest, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST, require_http_methods
+from django.views.decorators.http import require_http_methods, require_POST
 
 from integrations.oauth_models import (
     OAUTH_DEVICE_CODE_GRANT,
