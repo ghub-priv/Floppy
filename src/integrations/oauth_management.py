@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Q
-from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
@@ -14,6 +15,9 @@ from integrations.models import IntegrationToken
 from integrations.oauth_models import OAuthClient, OAuthRefreshToken
 from integrations.oauth_revocation import revoke_user_client_tokens
 from integrations.oauth_scope_info import scope_details
+
+if TYPE_CHECKING:
+    from django.http import HttpRequest, HttpResponse
 
 
 @login_required
