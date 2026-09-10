@@ -13,7 +13,7 @@ from django.utils import timezone
 from integrations.models import DEFAULT_INTEGRATION_SCOPES, IntegrationToken
 
 OAUTH_DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
-OAUTH_REFRESH_TOKEN_GRANT = "refresh_token"
+OAUTH_REFRESH_TOKEN_GRANT = "refresh_token"  # noqa: S105
 OAUTH_SUPPORTED_GRANT_TYPES = (
     OAUTH_DEVICE_CODE_GRANT,
     OAUTH_REFRESH_TOKEN_GRANT,
