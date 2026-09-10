@@ -1,0 +1,120 @@
+<div id="integration-tokens" class="bg-[var(--color-surface-strong)] p-5 rounded-lg mb-6">
+  <div class="flex items-center mb-3">
+    {% include "app/icons/padlock.svg" with classes="w-5 h-5 text-[var(--color-link)] mr-2" %}
+    <h3 class="text-base font-medium">Integration Tokens</h3>
+  </div>
+  <p class="text-[var(--color-text-muted)] mb-5 text-sm">
+    Create a separate credential for each third-party application. Scoped tokens can be individually revoked and are restricted to the permissions you select. Your legacy API token above remains supported for backwards compatibility.
+  </p>
+
+  <form method="post" action="{% url 'create_integration_token' %}" class="space-y-4 mb-6">
+    {% csrf_token %}
+    <div class="grid md:grid-cols-2 gap-4">
+      <label class="block">
+        <span class="text-sm font-medium text-[var(--color-text-secondary)]">Name</span>
+        <input type="text"
+               name="name"
+               maxlength="255"
+               required
+               placeholder="Kodi Living Room"
+               class="mt-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-dim)] px-3 py-2 text-sm text-[var(--color-text)]">
+      </label>
+      <label class="block">
+        <span class="text-sm font-medium text-[var(--color-text-secondary)]">Client identifier <span class="font-normal text-[var(--color-text-muted)]">(optional)</span></span>
+        <input type="text"
+               name="client_identifier"
+               maxlength="255"
+               placeholder="kodi-living-room"
+               class="mt-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-dim)] px-3 py-2 text-sm text-[var(--color-text)]">
+      </label>
+    </div>
+
+    <div>
+      <p class="text-sm font-medium text-[var(--color-text-secondary)] mb-2">Permissions</p>
+      <div class="grid md:grid-cols-2 gap-2">
+        {% for scope, label, description in integration_scope_options %}
+          <label class="flex items-start gap-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-dim)] p-3 cursor-pointer">
+            <input type="checkbox"
+                   name="scopes"
+                   value="{{ scope }}"
+                   checked
+                   class="mt-1 rounded border-[var(--color-border)]">
+            <span>
+              <span class="block text-sm font-medium text-[var(--color-text)]">{{ label }}</span>
+              <span class="block text-xs text-[var(--color-text-muted)] mt-0.5">{{ description }}</span>
+              <code class="block text-xs text-[var(--color-text-muted)] mt-1">{{ scope }}</code>
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-end gap-4">
+      <label class="block">
+        <span class="text-sm font-medium text-[var(--color-text-secondary)]">Expires after <span class="font-normal text-[var(--color-text-muted)]">(optional)</span></span>
+        <div class="flex items-center gap-2 mt-1">
+          <input type="number"
+                 name="expires_in_days"
+                 min="1"
+                 max="3650"
+                 placeholder="90"
+                 class="w-28 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-dim)] px-3 py-2 text-sm text-[var(--color-text)]">
+          <span class="text-sm text-[var(--color-text-muted)]">days</span>
+        </div>
+      </label>
+      <button type="submit"
+              class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors text-sm cursor-pointer">
+        Create token
+      </button>
+    </div>
+  </form>
+
+  <div class="border-t border-[var(--color-border)] pt-5">
+    <h4 class="text-sm font-medium mb-3">Existing tokens</h4>
+    <div class="space-y-3">
+      {% for integration_token in integration_tokens %}
+        <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-dim)] p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-medium text-sm text-[var(--color-text)]">{{ integration_token.name }}</span>
+                {% if integration_token.revoked_at %}
+                  <span class="text-xs px-2 py-0.5 rounded bg-[var(--color-error-bg)] text-[var(--color-error-text)]">Revoked</span>
+                {% elif not integration_token.is_valid %}
+                  <span class="text-xs px-2 py-0.5 rounded bg-[var(--color-warning-bg)] text-[var(--color-warning-text)]">Expired</span>
+                {% else %}
+                  <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400">Active</span>
+                {% endif %}
+              </div>
+              {% if integration_token.client_identifier %}
+                <p class="text-xs text-[var(--color-text-muted)] mt-1">{{ integration_token.client_identifier }}</p>
+              {% endif %}
+              <p class="text-xs text-[var(--color-text-muted)] mt-1 font-mono">{{ integration_token.token_prefix }}…</p>
+            </div>
+            {% if not integration_token.revoked_at %}
+              <form method="post" action="{% url 'revoke_integration_token' integration_token.id %}">
+                {% csrf_token %}
+                <button type="submit"
+                        class="px-3 py-1.5 text-xs rounded-md border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-error-text)] hover:border-[var(--color-error-border)] transition-colors cursor-pointer">
+                  Revoke
+                </button>
+              </form>
+            {% endif %}
+          </div>
+          <div class="flex flex-wrap gap-1.5 mt-3">
+            {% for scope in integration_token.scopes %}
+              <code class="text-xs px-2 py-1 rounded bg-[var(--color-surface)] text-[var(--color-text-secondary)]">{{ scope }}</code>
+            {% endfor %}
+          </div>
+          <div class="grid sm:grid-cols-3 gap-2 mt-3 text-xs text-[var(--color-text-muted)]">
+            <span>Created {{ integration_token.created_at|date:"Y-m-d H:i" }}</span>
+            <span>Last used {% if integration_token.last_used_at %}{{ integration_token.last_used_at|date:"Y-m-d H:i" }}{% else %}never{% endif %}</span>
+            <span>Expires {% if integration_token.expires_at %}{{ integration_token.expires_at|date:"Y-m-d H:i" }}{% else %}never{% endif %}</span>
+          </div>
+        </div>
+      {% empty %}
+        <p class="text-sm text-[var(--color-text-muted)]">No scoped integration tokens yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
