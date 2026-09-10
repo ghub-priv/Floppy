@@ -1,0 +1,26 @@
+{% extends "users/base.html" %}
+{% load integration_token_tags %}
+
+{% block title %}
+  Integration Tokens - Floppy
+{% endblock title %}
+
+{% block settings_content %}
+  <div class="space-y-6">
+    <div class="bg-[var(--color-surface)] rounded-lg p-6">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-xl font-semibold">Integration Tokens</h2>
+          <p class="text-[var(--color-text-muted)] mt-2 text-sm">
+            Manage scoped credentials for Kodi, Umbrella and other third-party clients without sharing your account-wide API token.
+          </p>
+        </div>
+        <a href="{% url 'integrations' %}"
+           class="px-3 py-2 text-sm rounded-md border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-muted)] transition-colors">
+          Back to Integrations
+        </a>
+      </div>
+    </div>
+    {% integration_token_panel request.user %}
+  </div>
+{% endblock settings_content %}
