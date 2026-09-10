@@ -1,0 +1,67 @@
+name: Scoped token port wiring
+
+on:
+  push:
+    branches:
+      - feature/scoped-integration-tokens-v1.0.1
+    paths:
+      - .github/workflows/scoped-token-port.yml
+
+permissions:
+  contents: write
+
+jobs:
+  wire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/scoped-integration-tokens-v1.0.1
+          fetch-depth: 0
+      - name: Wire routes and integrations panel
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          urls = Path("src/users/urls.py")
+          text = urls.read_text()
+          old_import = "from users import metadata_views, onboarding_views, server_port_views, views\n"
+          new_import = old_import + "from users import integration_token_views\n"
+          if old_import not in text:
+              raise SystemExit("users/urls.py import anchor not found")
+          text = text.replace(old_import, new_import, 1)
+
+          old_route = '    path("settings/integrations", views.integrations, name="integrations"),\n'
+          new_route = old_route + '''    path(\n        "settings/integrations/tokens/create",\n        integration_token_views.create_integration_token,\n        name="create_integration_token",\n    ),\n    path(\n        "settings/integrations/tokens/<int:token_id>/revoke",\n        integration_token_views.revoke_integration_token,\n        name="revoke_integration_token",\n    ),\n'''
+          if old_route not in text:
+              raise SystemExit("users/urls.py integrations route anchor not found")
+          text = text.replace(old_route, new_route, 1)
+          urls.write_text(text)
+
+          template = Path("src/templates/users/integrations.html")
+          text = template.read_text()
+          load_anchor = "{% load user_tags %}\n"
+          if load_anchor not in text:
+              raise SystemExit("integrations.html load anchor not found")
+          text = text.replace(
+              load_anchor,
+              load_anchor + "{% load integration_token_tags %}\n",
+              1,
+          )
+          panel_anchor = "    {# Filter bar #}\n"
+          if panel_anchor not in text:
+              raise SystemExit("integrations.html panel anchor not found")
+          text = text.replace(
+              panel_anchor,
+              "    {% integration_token_panel request.user %}\n\n" + panel_anchor,
+              1,
+          )
+          template.write_text(text)
+          PY
+      - name: Commit wiring
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/users/urls.py src/templates/users/integrations.html
+          git commit -m "Wire scoped integration token management UI"
+          git push origin HEAD:feature/scoped-integration-tokens-v1.0.1
