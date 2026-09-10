@@ -1,13 +1,17 @@
 """Authentication classes for API requests."""
 
 import hashlib
+from datetime import timedelta
 
+from django.utils import timezone
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import BasePermission
 
 from integrations.models import IntegrationToken
 from users.models import User
+
+from .integration_scopes import authorize_integration_request
 
 
 def authenticate_token(raw_token: str):
@@ -37,6 +41,24 @@ def authenticate_token(raw_token: str):
     return (user, None)
 
 
+def _mark_integration_token_used(token):
+    """Record recent credential use without writing on every API request."""
+    now = timezone.now()
+    cutoff = now - timedelta(minutes=5)
+    if token.last_used_at is None or token.last_used_at < cutoff:
+        IntegrationToken.objects.filter(pk=token.pk).update(last_used_at=now)
+        token.last_used_at = now
+
+
+def authenticate_and_authorize(request, raw_token: str):
+    """Authenticate a credential and enforce IntegrationToken scope policy."""
+    user, auth = authenticate_token(raw_token)
+    if isinstance(auth, IntegrationToken):
+        authorize_integration_request(request, auth)
+        _mark_integration_token_used(auth)
+    return (user, auth)
+
+
 class BearerAuthentication(BaseAuthentication):
     """Bearer or Token Authorization header authentication."""
 
@@ -51,7 +73,7 @@ class BearerAuthentication(BaseAuthentication):
         if len(parts) != 2 or parts[0].lower() not in self.keywords:  # noqa: PLR2004
             return None
         token = parts[1]
-        return authenticate_token(token)
+        return authenticate_and_authorize(request, token)
 
 
 class ListenBrainzTokenAuthentication(BaseAuthentication):
@@ -81,7 +103,7 @@ class ListenBrainzTokenAuthentication(BaseAuthentication):
         if len(parts) != 2 or parts[0].lower() != self.keyword.lower():  # noqa: PLR2004
             return None
         token = parts[1]
-        return authenticate_token(token)
+        return authenticate_and_authorize(request, token)
 
 
 class APIKeyAuthentication(BaseAuthentication):
@@ -92,7 +114,7 @@ class APIKeyAuthentication(BaseAuthentication):
         auth = request.headers.get("X-API-Key")
         if not auth:
             return None
-        return authenticate_token(auth.strip())
+        return authenticate_and_authorize(request, auth.strip())
 
 
 class HasScope(BasePermission):
@@ -120,4 +142,3 @@ class HasScope(BasePermission):
                 return True
             return request.auth.has_scope(scope)
         return False
-
