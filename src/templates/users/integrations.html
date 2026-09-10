@@ -4,6 +4,7 @@
 {% load static %}
 {% load app_tags %}
 {% load user_tags %}
+{% load integration_token_tags %}
 
 {% block title %}
   {% translate "Integrations - Floppy" %}
@@ -73,6 +74,8 @@
         </div>
       </div>
     </div>
+
+    {% integration_token_panel request.user %}
 
     {# Filter bar #}
     <div class="bg-[var(--color-surface-strong)] rounded-lg p-4 mb-5">
