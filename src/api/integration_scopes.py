@@ -10,6 +10,8 @@ user library state: Planning/Watching/On Hold/Completed/Dropped, Collection and
 custom lists.
 """
 
+from __future__ import annotations
+
 from rest_framework.exceptions import PermissionDenied
 
 
@@ -171,12 +173,10 @@ def authorize_integration_request(request, token):
     required_scopes = method_policy.get(method) if method_policy else None
 
     if not required_scopes:
-        raise PermissionDenied(
-            "This endpoint is not available to scoped integration tokens."
-        )
+        msg = "This endpoint is not available to scoped integration tokens."
+        raise PermissionDenied(msg)
 
     missing = [scope for scope in required_scopes if not token.has_scope(scope)]
     if missing:
-        raise PermissionDenied(
-            "Integration token lacks required scope(s): " + ", ".join(missing)
-        )
+        msg = "Integration token lacks required scope(s): " + ", ".join(missing)
+        raise PermissionDenied(msg)
