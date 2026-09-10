@@ -16,6 +16,35 @@
   </a>
 </li>
 
+{# rating_intelligence_v2_3_nav #}
+{% url 'rating_intelligence' as rating_intelligence_url %}
+{% url 'rating_intelligence_advanced' as rating_intelligence_advanced_url %}
+{% url 'rating_intelligence_colours' as rating_intelligence_colours_url %}
+<li>
+  <a href="{{ rating_intelligence_url }}"
+     hx-boost="false"
+     class="flex items-center space-x-3 px-4 py-2 rounded-md transition-colors duration-200 text-sm {% if request.path == rating_intelligence_url or request.path == rating_intelligence_advanced_url %}text-[var(--color-text)] bg-[var(--color-border)]{% else %}text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-hover-dim)]{% endif %}">
+    {% if request.path == rating_intelligence_url or request.path == rating_intelligence_advanced_url %}
+      {% include "app/icons/bars-increasing.svg" with classes="w-5 h-5 text-[var(--color-link)]" %}
+    {% else %}
+      {% include "app/icons/bars-increasing.svg" with classes="w-5 h-5" %}
+    {% endif %}
+    <span>{% translate "Rating Intelligence" %}</span>
+  </a>
+</li>
+<li>
+  <a href="{{ rating_intelligence_colours_url }}"
+     hx-boost="false"
+     class="flex items-center space-x-3 px-4 py-2 rounded-md transition-colors duration-200 text-sm {% if request.path == rating_intelligence_colours_url %}text-[var(--color-text)] bg-[var(--color-border)]{% else %}text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-hover-dim)]{% endif %}">
+    {% if request.path == rating_intelligence_colours_url %}
+      {% include "app/icons/bars-pyramid.svg" with classes="w-5 h-5 text-[var(--color-link)]" %}
+    {% else %}
+      {% include "app/icons/bars-pyramid.svg" with classes="w-5 h-5" %}
+    {% endif %}
+    <span>{% translate "Rating Colours" %}</span>
+  </a>
+</li>
+
 {# post_watch_workflow_nav_v1_1 #}
 {% url 'post_watch' as post_watch_url %}
 <li>
