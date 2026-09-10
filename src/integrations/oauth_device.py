@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from urllib.parse import urlencode
 
-from django.contrib.auth.decorators import login_required, login_not_required
+from django.contrib.auth.decorators import login_not_required, login_required
 from django.http import HttpRequest, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
