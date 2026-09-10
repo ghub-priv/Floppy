@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Rating Intelligence Colours - Floppy{% endblock title %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+  <div>
+    <h1 class="text-3xl font-bold text-[var(--color-text)]">Rating Intelligence Colours</h1>
+    <p class="mt-2 text-sm text-[var(--color-text-muted)]">
+      Customise the semantic colours used by Basic and Advanced Rating Intelligence.
+      These settings change presentation only and never affect the rating calculations.
+    </p>
+  </div>
+
+  <form method="post" class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-5">
+    {% csrf_token %}
+
+    <div class="grid sm:grid-cols-2 gap-4">
+      <label class="rounded-md bg-[var(--color-hover-dim)] p-4 flex items-center justify-between gap-4">
+        <span>
+          <span class="block font-semibold text-[var(--color-text)]">Information</span>
+          <span class="block mt-1 text-xs text-[var(--color-text-muted)]">Counts, baselines and neutral statistics.</span>
+        </span>
+        <input type="color" name="pri_colour_info" value="{{ colours.pri_colour_info }}" class="h-10 w-14 cursor-pointer rounded border border-[var(--color-border)] bg-transparent">
+      </label>
+
+      <label class="rounded-md bg-[var(--color-hover-dim)] p-4 flex items-center justify-between gap-4">
+        <span>
+          <span class="block font-semibold text-[var(--color-text)]">Positive</span>
+          <span class="block mt-1 text-xs text-[var(--color-text-muted)]">Positive effects, improvements and favourable signals.</span>
+        </span>
+        <input type="color" name="pri_colour_positive" value="{{ colours.pri_colour_positive }}" class="h-10 w-14 cursor-pointer rounded border border-[var(--color-border)] bg-transparent">
+      </label>
+
+      <label class="rounded-md bg-[var(--color-hover-dim)] p-4 flex items-center justify-between gap-4">
+        <span>
+          <span class="block font-semibold text-[var(--color-text)]">Negative</span>
+          <span class="block mt-1 text-xs text-[var(--color-text-muted)]">Negative effects and unfavourable signals.</span>
+        </span>
+        <input type="color" name="pri_colour_negative" value="{{ colours.pri_colour_negative }}" class="h-10 w-14 cursor-pointer rounded border border-[var(--color-border)] bg-transparent">
+      </label>
+
+      <label class="rounded-md bg-[var(--color-hover-dim)] p-4 flex items-center justify-between gap-4">
+        <span>
+          <span class="block font-semibold text-[var(--color-text)]">Caution</span>
+          <span class="block mt-1 text-xs text-[var(--color-text-muted)]">Warnings, divergence and low-confidence indicators.</span>
+        </span>
+        <input type="color" name="pri_colour_caution" value="{{ colours.pri_colour_caution }}" class="h-10 w-14 cursor-pointer rounded border border-[var(--color-border)] bg-transparent">
+      </label>
+    </div>
+
+    <div class="flex flex-wrap gap-3 pt-2">
+      <button type="submit" class="px-4 py-2 rounded-md bg-[var(--color-link)] text-white text-sm font-semibold hover:opacity-90">
+        Save colours
+      </button>
+      <a href="{% url 'rating_intelligence' %}" class="px-4 py-2 rounded-md border border-[var(--color-border)] text-sm font-semibold text-[var(--color-text)] hover:bg-[var(--color-hover-dim)]">
+        Back to Rating Intelligence
+      </a>
+    </div>
+  </form>
+
+  <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm text-[var(--color-text-muted)]">
+    Default palette: information #38bdf8, positive #34d399, negative #fb7185, caution #fbbf24.
+  </div>
+</div>
+{% endblock content %}
