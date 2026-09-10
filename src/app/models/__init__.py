@@ -79,6 +79,7 @@ from app.models.provider_credential import (
     InstanceProviderCredential,
     UserProviderCredential,
 )
+from app.models.rating_intelligence import RatingIntelligencePreference
 from app.models.tombstone import DeletedMedia
 from app.models.tv import (
     TV,
@@ -158,6 +159,7 @@ __all__ = [
     "PodcastShowTracker",
     "PostWatchDismissal",
     "ProviderMetadataStatus",
+    "RatingIntelligencePreference",
     "RewatchAlreadyCompleteError",
     "Season",
     "Sources",
