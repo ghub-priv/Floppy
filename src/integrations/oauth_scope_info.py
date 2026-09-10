@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from integrations.models import DEFAULT_INTEGRATION_SCOPES
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 OAUTH_SCOPE_OPTIONS = (
     ("catalog:read", "Catalog Read", "Read provider-backed catalogue metadata."),
