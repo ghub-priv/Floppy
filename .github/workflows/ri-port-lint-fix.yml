@@ -1,0 +1,185 @@
+name: Rating Intelligence lint cleanup
+
+on:
+  push:
+    branches:
+      - chris/rating-intelligence-port
+    paths:
+      - .github/workflows/ri-port-lint-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: chris/rating-intelligence-port
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Apply mechanical lint fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              if old not in text:
+                  raise RuntimeError(f"Missing expected pattern: {label}")
+              return text.replace(old, new, 1)
+
+          # Model magic-method documentation.
+          path = Path("src/app/models/rating_intelligence.py")
+          text = path.read_text()
+          text = replace_once(
+              text,
+              '    def __str__(self):\n        return f"Rating Intelligence preferences for {self.user}"',
+              '    def __str__(self):\n        """Return a human-readable description of the preference row."""\n        return f"Rating Intelligence preferences for {self.user}"',
+              "model __str__",
+          )
+          path.write_text(text)
+
+          # Basic engine documentation and named analytical thresholds.
+          path = Path("src/app/rating_intelligence.py")
+          text = path.read_text()
+          text = replace_once(
+              text,
+              'from app.discover.scoring import blended_world_quality, weighted_pearson_correlation',
+              'from app.discover.scoring import (\n    blended_world_quality,\n    weighted_pearson_correlation,\n)',
+              "basic import formatting",
+          )
+          text = replace_once(
+              text,
+              'TV_CONFIDENCE_PRIOR_EPISODES = 5.0\n',
+              'TV_CONFIDENCE_PRIOR_EPISODES = 5.0\nVERY_WEAK_CORRELATION_MAX = 0.20\nWEAK_CORRELATION_MAX = 0.40\nMODERATE_CORRELATION_MAX = 0.60\nSTRONG_CORRELATION_MAX = 0.80\nHIGH_RATING_THRESHOLD = 7.0\nELITE_RATING_THRESHOLD = 8.0\n',
+              "basic constants",
+          )
+          text = replace_once(
+              text,
+              'def invalidate_rating_intelligence_cache(user_id):\n    cache.delete',
+              'def invalidate_rating_intelligence_cache(user_id):\n    """Invalidate all cached Rating Intelligence profiles for a user."""\n    cache.delete',
+              "basic cache docstring",
+          )
+          text = text.replace('magnitude < 0.20', 'magnitude < VERY_WEAK_CORRELATION_MAX')
+          text = text.replace('magnitude < 0.40', 'magnitude < WEAK_CORRELATION_MAX')
+          text = text.replace('magnitude < 0.60', 'magnitude < MODERATE_CORRELATION_MAX')
+          text = text.replace('magnitude < 0.80', 'magnitude < STRONG_CORRELATION_MAX')
+          text = text.replace('s >= 7.0 for s in scores', 's >= HIGH_RATING_THRESHOLD for s in scores')
+          text = text.replace('s >= 8.0 for s in scores', 's >= ELITE_RATING_THRESHOLD for s in scores')
+          text = text.replace('s >= 7.0 for s in episode_scores', 's >= HIGH_RATING_THRESHOLD for s in episode_scores')
+          text = text.replace('s >= 8.0 for s in episode_scores', 's >= ELITE_RATING_THRESHOLD for s in episode_scores')
+          text = replace_once(
+              text,
+              'def compute_rating_intelligence_profile(user, media_kind="movies"):\n    media_kind =',
+              'def compute_rating_intelligence_profile(user, media_kind="movies"):\n    """Compute a Basic Rating Intelligence profile for the selected medium."""\n    media_kind =',
+              "basic compute docstring",
+          )
+          text = replace_once(
+              text,
+              'def get_rating_intelligence_profile(user, force=False, media_kind="movies"):\n    media_kind =',
+              'def get_rating_intelligence_profile(user, force=False, media_kind="movies"):\n    """Return a cached Basic Rating Intelligence profile, recomputing if needed."""\n    media_kind =',
+              "basic getter docstring",
+          )
+          text = replace_once(
+              text,
+              'def rating_intelligence(request):\n    media_kind =',
+              'def rating_intelligence(request):\n    """Render the Basic Rating Intelligence page."""\n    media_kind =',
+              "basic view docstring",
+          )
+          text = replace_once(
+              text,
+              'def refresh_rating_intelligence(request):\n    media_kind =',
+              'def refresh_rating_intelligence(request):\n    """Force-recompute the selected Basic Rating Intelligence profile."""\n    media_kind =',
+              "basic refresh docstring",
+          )
+          path.write_text(text)
+
+          # Advanced engine documentation, explicit pairing and named thresholds.
+          path = Path("src/app/rating_intelligence_advanced.py")
+          text = path.read_text()
+          text = replace_once(
+              text,
+              'RIDGE_TOLERANCE = 1e-5\n',
+              'RIDGE_TOLERANCE = 1e-5\nMIN_PAIR_SAMPLES = 2\nMIN_TV_VALIDATION_SAMPLES = 20\nHIGH_RATING_THRESHOLD = 7.0\n',
+              "advanced constants",
+          )
+          text = replace_once(
+              text,
+              'def invalidate_advanced_rating_intelligence_cache(user_id):\n    cache.delete',
+              'def invalidate_advanced_rating_intelligence_cache(user_id):\n    """Invalidate all cached Advanced Rating Intelligence profiles for a user."""\n    cache.delete',
+              "advanced cache docstring",
+          )
+          text = text.replace('if len(pairs) < 2:', 'if len(pairs) < MIN_PAIR_SAMPLES:', 1)
+          text = replace_once(
+              text,
+              'weights = {feature: 0.0 for feature in ordered}',
+              'weights = dict.fromkeys(ordered, 0.0)',
+              "advanced weights",
+          )
+          text = text.replace('if len(actual) < 2:', 'if len(actual) < MIN_PAIR_SAMPLES:', 1)
+          text = text.replace('zip(actual, predicted)', 'zip(actual, predicted, strict=True)')
+          text = text.replace('actual[i] >= 7.0 for i in top_indexes', 'actual[i] >= HIGH_RATING_THRESHOLD for i in top_indexes')
+          text = text.replace('if len(samples) < 20:', 'if len(samples) < MIN_TV_VALIDATION_SAMPLES:', 1)
+          text = replace_once(
+              text,
+              'def compute_advanced_rating_intelligence(user, media_kind="movies"):\n    media_kind =',
+              'def compute_advanced_rating_intelligence(user, media_kind="movies"):\n    """Compute an Advanced Rating Intelligence profile for the selected medium."""\n    media_kind =',
+              "advanced compute docstring",
+          )
+          text = text.replace('zip(samples, public_predictions)', 'zip(samples, public_predictions, strict=True)')
+          text = text.replace('zip(samples, hybrid_predictions)', 'zip(samples, hybrid_predictions, strict=True)')
+          text = replace_once(
+              text,
+              'def get_advanced_rating_intelligence(user, force=False, media_kind="movies"):\n    media_kind =',
+              'def get_advanced_rating_intelligence(user, force=False, media_kind="movies"):\n    """Return a cached Advanced profile, recomputing it when requested."""\n    media_kind =',
+              "advanced getter docstring",
+          )
+          text = replace_once(
+              text,
+              'def advanced_rating_intelligence(request):\n    media_kind =',
+              'def advanced_rating_intelligence(request):\n    """Render the Advanced Rating Intelligence page."""\n    media_kind =',
+              "advanced view docstring",
+          )
+          text = replace_once(
+              text,
+              'def refresh_advanced_rating_intelligence(request):\n    media_kind =',
+              'def refresh_advanced_rating_intelligence(request):\n    """Force-recompute the selected Advanced Rating Intelligence profile."""\n    media_kind =',
+              "advanced refresh docstring",
+          )
+          path.write_text(text)
+          PY
+
+      - name: Install lint tooling
+        run: pip install ruff==0.15.8
+
+      - name: Apply safe Ruff fixes and format
+        run: |
+          ruff check --fix \
+            src/app/models/rating_intelligence.py \
+            src/app/rating_intelligence.py \
+            src/app/rating_intelligence_advanced.py \
+            src/app/rating_intelligence_urls.py
+          ruff format \
+            src/app/models/rating_intelligence.py \
+            src/app/rating_intelligence.py \
+            src/app/rating_intelligence_advanced.py \
+            src/app/rating_intelligence_urls.py
+          ruff check \
+            src/app/models/rating_intelligence.py \
+            src/app/rating_intelligence.py \
+            src/app/rating_intelligence_advanced.py \
+            src/app/rating_intelligence_urls.py
+
+      - name: Commit fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/app/models/rating_intelligence.py src/app/rating_intelligence.py src/app/rating_intelligence_advanced.py src/app/rating_intelligence_urls.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Fix Rating Intelligence lint violations"
+          git push origin HEAD:chris/rating-intelligence-port
