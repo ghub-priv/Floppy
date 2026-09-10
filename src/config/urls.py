@@ -71,6 +71,7 @@ urlpatterns = [
     path("", include("app.post_watch_urls")),
     path("", include("app.integration_health_urls")),
     path("", include("app.urls")),
+    path("", include("integrations.oauth_urls")),
     path("", include("integrations.urls")),
     path("", include("users.urls")),
     path("", include("lists.urls")),
