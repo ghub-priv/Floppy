@@ -107,6 +107,7 @@ SpecialModels = [
     "Episode",
     "MoviePlay",
     "PostWatchDismissal",
+    "RatingIntelligencePreference",
     "BasicMedia",
     "Artist",
     "Album",
