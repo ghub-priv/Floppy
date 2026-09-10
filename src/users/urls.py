@@ -1,6 +1,12 @@
 from django.urls import path
 
-from users import metadata_views, onboarding_views, server_port_views, views
+from users import (
+    integration_token_views,
+    metadata_views,
+    onboarding_views,
+    server_port_views,
+    views,
+)
 
 urlpatterns = [
     path("setup/", onboarding_views.onboarding_media_types, name="onboarding_media_types"),
@@ -86,6 +92,21 @@ urlpatterns = [
         name="convert_anime_library",
     ),
     path("settings/integrations", views.integrations, name="integrations"),
+    path(
+        "settings/integrations/tokens",
+        integration_token_views.integration_tokens,
+        name="integration_tokens",
+    ),
+    path(
+        "settings/integrations/tokens/create",
+        integration_token_views.create_integration_token,
+        name="create_integration_token",
+    ),
+    path(
+        "settings/integrations/tokens/<int:token_id>/revoke",
+        integration_token_views.revoke_integration_token,
+        name="revoke_integration_token",
+    ),
     path("settings/rss", views.rss_settings, name="rss_settings"),
     path(
         "settings/metadata",
