@@ -6,7 +6,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from integrations.models import IntegrationToken
 
@@ -37,6 +37,13 @@ def integration_token_context(user):
         "integration_tokens": user.integration_tokens.order_by("-created_at"),
         "integration_scope_options": INTEGRATION_SCOPE_OPTIONS,
     }
+
+
+@login_required
+@require_GET
+def integration_tokens(request):
+    """Render the scoped integration-token settings subpage."""
+    return render(request, "users/integration_tokens.html")
 
 
 @login_required
@@ -79,7 +86,7 @@ def create_integration_token(request):
     if errors:
         for error in errors:
             messages.error(request, error)
-        return redirect("integrations")
+        return redirect("integration_tokens")
 
     integration_token, raw_integration_token = IntegrationToken.generate(
         user=request.user,
@@ -111,4 +118,4 @@ def revoke_integration_token(request, token_id):
         integration_token.revoked_at = timezone.now()
         integration_token.save(update_fields=["revoked_at"])
         messages.success(request, f"Integration token '{integration_token.name}' revoked.")
-    return redirect("integrations")
+    return redirect("integration_tokens")
