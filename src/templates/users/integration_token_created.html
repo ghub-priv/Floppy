@@ -1,0 +1,56 @@
+{% extends "users/base.html" %}
+
+{% block title %}
+  Integration Token Created - Floppy
+{% endblock title %}
+
+{% block settings_content %}
+  <div class="max-w-3xl space-y-6">
+    <div class="bg-[var(--color-surface)] rounded-lg p-6">
+      <div class="flex items-center mb-3">
+        {% include "app/icons/padlock.svg" with classes="w-6 h-6 text-[var(--color-link)] mr-3" %}
+        <h2 class="text-xl font-semibold">Integration Token Created</h2>
+      </div>
+
+      <div class="bg-[var(--color-warning-bg)] border border-[var(--color-warning-border)] rounded-md p-4 mb-5">
+        <p class="text-sm text-[var(--color-warning-text)]">
+          Copy this token now. Floppy stores only its SHA-256 digest and cannot display the plaintext secret again.
+        </p>
+      </div>
+
+      <p class="text-sm text-[var(--color-text-secondary)] mb-2">
+        <strong>{{ integration_token.name }}</strong>
+        {% if integration_token.client_identifier %} · {{ integration_token.client_identifier }}{% endif %}
+      </p>
+
+      <div class="bg-[var(--color-surface-dim)] p-3 rounded-md mb-5">
+        <div class="flex items-center gap-2">
+          <input readonly
+                 id="new-integration-token"
+                 type="text"
+                 value="{{ raw_integration_token }}"
+                 class="flex-1 py-2 px-3 bg-[var(--color-surface-dim)] rounded-md text-[var(--color-text-secondary)] text-sm border-0 focus:ring-0 outline-none font-mono">
+          <span class="flex items-center cursor-pointer group pr-2"
+                title="Copy"
+                data-copy-target="#new-integration-token">
+            {% include "app/icons/copy.svg" with classes="w-5 h-5 text-[var(--color-text-muted)] group-hover:text-[var(--color-link)] transition-colors" %}
+          </span>
+        </div>
+      </div>
+
+      <div class="mb-5">
+        <p class="text-sm font-medium mb-2">Granted permissions</p>
+        <div class="flex flex-wrap gap-2">
+          {% for scope in integration_token.scopes %}
+            <code class="text-xs px-2 py-1 rounded bg-[var(--color-surface-dim)] text-[var(--color-text-secondary)]">{{ scope }}</code>
+          {% endfor %}
+        </div>
+      </div>
+
+      <a href="{% url 'integrations' %}#integration-tokens"
+         class="inline-flex px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors text-sm">
+        Back to Integration Tokens
+      </a>
+    </div>
+  </div>
+{% endblock settings_content %}
