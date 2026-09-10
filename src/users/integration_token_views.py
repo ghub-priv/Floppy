@@ -1,5 +1,7 @@
 """User-facing management views for scoped integration tokens."""
 
+from __future__ import annotations
+
 from datetime import timedelta
 
 from django.contrib import messages
@@ -29,6 +31,7 @@ INTEGRATION_SCOPE_OPTIONS = (
 )
 _ALLOWED_SCOPES = frozenset(scope for scope, _label, _description in INTEGRATION_SCOPE_OPTIONS)
 MAX_TOKEN_EXPIRY_DAYS = 3650
+MAX_TOKEN_FIELD_LENGTH = 255
 
 
 def integration_token_context(user):
@@ -58,10 +61,10 @@ def create_integration_token(request):
     errors = []
     if not name:
         errors.append("Token name is required.")
-    elif len(name) > 255:
+    elif len(name) > MAX_TOKEN_FIELD_LENGTH:
         errors.append("Token name must be 255 characters or fewer.")
 
-    if len(client_identifier) > 255:
+    if len(client_identifier) > MAX_TOKEN_FIELD_LENGTH:
         errors.append("Client identifier must be 255 characters or fewer.")
 
     if not scopes:
