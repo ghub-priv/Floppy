@@ -16,7 +16,6 @@ from integrations.models import IntegrationToken
 from integrations.oauth_models import (
     OAUTH_ACCESS_TOKEN_LIFETIME_SECONDS,
     OAUTH_DEVICE_CODE_GRANT,
-    OAUTH_REFRESH_TOKEN_GRANT,
     OAUTH_SUPPORTED_GRANT_TYPES,
     OAuthClient,
     OAuthDeviceAuthorization,
