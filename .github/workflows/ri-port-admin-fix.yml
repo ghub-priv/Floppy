@@ -1,0 +1,45 @@
+name: Rating Intelligence admin fix
+
+on:
+  push:
+    branches:
+      - chris/rating-intelligence-port
+    paths:
+      - .github/workflows/ri-port-admin-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: chris/rating-intelligence-port
+          fetch-depth: 0
+
+      - name: Exclude preference model from MediaAdmin
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/app/admin.py")
+          text = path.read_text()
+          marker = '    "PostWatchDismissal",\n'
+          replacement = marker + '    "RatingIntelligencePreference",\n'
+          if marker not in text:
+              raise RuntimeError("SpecialModels insertion point not found")
+          if '    "RatingIntelligencePreference",\n' not in text:
+              text = text.replace(marker, replacement, 1)
+          path.write_text(text)
+          PY
+
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/app/admin.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Exclude Rating Intelligence preferences from MediaAdmin"
+          git push origin HEAD:chris/rating-intelligence-port
