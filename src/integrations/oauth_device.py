@@ -131,6 +131,8 @@ def oauth_device(request: HttpRequest):
         context["error"] = "That device code is not valid."
     elif authorization is not None and authorization.is_expired:
         context["error"] = "That device code has expired."
+    elif authorization is not None and not authorization.client.is_active:
+        context["error"] = "That application registration has been revoked."
     elif authorization is not None and authorization.consumed_at is not None:
         context["error"] = "That device code has already been used."
     elif request.method == "POST" and authorization is not None:
