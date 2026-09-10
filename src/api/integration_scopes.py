@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from rest_framework.exceptions import PermissionDenied
 
-
 INTEGRATION_SCOPE_POLICY = {
     # Media catalogue + tracked-state surfaces.
     "api_media_type_list": {

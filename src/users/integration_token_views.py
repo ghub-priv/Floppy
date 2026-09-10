@@ -12,7 +12,6 @@ from django.views.decorators.http import require_GET, require_POST
 
 from integrations.models import IntegrationToken
 
-
 INTEGRATION_SCOPE_OPTIONS = (
     ("catalog:read", "Catalog Read", "Read provider-backed catalogue metadata."),
     ("progress:read", "Progress Read", "Read watch history and playback progress."),
@@ -29,7 +28,9 @@ INTEGRATION_SCOPE_OPTIONS = (
     ),
     ("scrobble:write", "Scrobble Write", "Submit playback and ListenBrainz events."),
 )
-_ALLOWED_SCOPES = frozenset(scope for scope, _label, _description in INTEGRATION_SCOPE_OPTIONS)
+_ALLOWED_SCOPES = frozenset(
+    scope for scope, _label, _description in INTEGRATION_SCOPE_OPTIONS
+)
 MAX_TOKEN_EXPIRY_DAYS = 3650
 MAX_TOKEN_FIELD_LENGTH = 255
 
@@ -120,5 +121,7 @@ def revoke_integration_token(request, token_id):
     if integration_token.revoked_at is None:
         integration_token.revoked_at = timezone.now()
         integration_token.save(update_fields=["revoked_at"])
-        messages.success(request, f"Integration token '{integration_token.name}' revoked.")
+        messages.success(
+            request, f"Integration token '{integration_token.name}' revoked."
+        )
     return redirect("integration_tokens")
