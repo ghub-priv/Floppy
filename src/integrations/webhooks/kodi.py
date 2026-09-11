@@ -58,7 +58,10 @@ class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
         return result
 
     def _is_supported_event(self, event_type):
-        return event_type in KODI_LIVE_EVENT_MAP
+        supported = event_type in KODI_LIVE_EVENT_MAP
+        if not supported:
+            logger.info("Ignoring Kodi webhook event type: %s", event_type)
+        return supported
 
     def _is_played(self, payload):
         if payload.get("event") == KodiEvent.PLAYBACK_END:
