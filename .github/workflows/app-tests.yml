@@ -92,6 +92,10 @@ jobs:
               path = Path(raw)
               if path.suffix != ".py":
                   continue
+              # A PR diff includes deleted/renamed-away test paths. Never pass
+              # those stale module names to Django's loader.
+              if not path.exists():
+                  continue
               if "tests" in path.parts or path.name == "tests.py":
                   if path.name != "__init__.py":
                       tests.add(module_name(path))
@@ -113,23 +117,57 @@ jobs:
                   if any(source_stem in stem for source_stem in source_stems):
                       tests.add(module_name(candidate))
 
-          with Path("quick-tests.txt").open("w") as handle:
-              for test in sorted(tests):
-                  handle.write(f"{test}\n")
+          browser_tests: list[str] = []
+          parallel_tests: list[str] = []
+          for test in sorted(tests):
+              path = Path("src", *test.split(".")).with_suffix(".py")
+              source = path.read_text(encoding="utf-8") if path.exists() else ""
+              if "playwright" in source.lower():
+                  browser_tests.append(test)
+              else:
+                  parallel_tests.append(test)
+
+          for filename, selected in (
+              ("quick-tests.txt", sorted(tests)),
+              ("quick-parallel-tests.txt", parallel_tests),
+              ("quick-browser-tests.txt", browser_tests),
+          ):
+              with Path(filename).open("w") as handle:
+                  for test in selected:
+                      handle.write(f"{test}\n")
 
           print(f"Selected {len(tests)} targeted test module(s).")
+          print(f"  parallel: {len(parallel_tests)}")
+          print(f"  browser/serial: {len(browser_tests)}")
           for test in sorted(tests):
               print(f"  {test}")
           PY
 
-      - name: Run targeted tests
+      - name: Install Playwright Chromium when needed
         run: |
-          if [ ! -s quick-tests.txt ]; then
-            echo "No targeted Django test modules changed or matched; startup check is the draft-PR gate."
+          if [ -s quick-browser-tests.txt ]; then
+            uv run --no-sync playwright install --with-deps chromium
+          else
+            echo "No selected Playwright modules; browser install not required."
+          fi
+
+      - name: Run targeted parallel tests
+        run: |
+          if [ ! -s quick-parallel-tests.txt ]; then
+            echo "No parallel-safe targeted Django test modules selected."
             exit 0
           fi
-          mapfile -t TESTS < quick-tests.txt
+          mapfile -t TESTS < quick-parallel-tests.txt
           uv run --no-sync python src/manage.py test "${TESTS[@]}" --parallel --exclude-tag network
+
+      - name: Run targeted browser tests serially
+        run: |
+          if [ ! -s quick-browser-tests.txt ]; then
+            echo "No targeted Playwright test modules selected."
+            exit 0
+          fi
+          mapfile -t TESTS < quick-browser-tests.txt
+          uv run --no-sync python src/manage.py test "${TESTS[@]}" --parallel 1 --exclude-tag network
 
   full:
     name: full shard ${{ matrix.shard }}
