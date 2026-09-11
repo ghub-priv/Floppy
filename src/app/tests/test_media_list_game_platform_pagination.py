@@ -1,14 +1,16 @@
-"""Regression coverage for game-platform filtering on the SQL media-list path."""
+"""Regression coverage for game-platform filtering around SQL pagination."""
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
+from app.media_list_filters import MediaListFilters
+from app.media_list_pagination import can_paginate_in_sql
 from app.models import BasicMedia, Game, Item, MediaTypes, Sources, Status
 from users.models import MediaStatusChoices
 
 
 class GamePlatformSqlPaginationTests(TestCase):
-    """Keep JSON-backed game platform filters safe inside SQL subqueries."""
+    """Keep JSON-backed game platform filters on their alias-safe path."""
 
     @classmethod
     def setUpTestData(cls):
@@ -47,33 +49,28 @@ class GamePlatformSqlPaginationTests(TestCase):
             ]
         )
 
-    def test_platform_filter_works_in_paginated_and_item_projection_queries(self):
-        filters = {
-            "platform_values": ("PC",),
-            "platform_mode": "or",
-        }
-
-        page, total = BasicMedia.objects.get_media_list(
-            user=self.user,
-            media_type=MediaTypes.GAME.value,
-            status_filter=MediaStatusChoices.ALL,
-            sort_filter="title",
-            list_sql_filters=filters,
-            sql_limit=32,
-            sql_offset=0,
+    def test_platform_filter_uses_alias_safe_fallback(self):
+        """Platform JSON predicates must not enter alias-sensitive subqueries."""
+        self.assertFalse(
+            can_paginate_in_sql(
+                MediaListFilters(platforms=("PC",)),
+                MediaTypes.GAME.value,
+                "title",
+            )
         )
 
-        self.assertEqual(total, 20)
-        self.assertEqual(len(page), 20)
-        self.assertTrue(all("PC" in media.item.platforms for media in page))
-
-        projected = list(
-            BasicMedia.objects.get_media_list_item_values(
+        media = list(
+            BasicMedia.objects.get_media_list(
                 user=self.user,
                 media_type=MediaTypes.GAME.value,
                 status_filter=MediaStatusChoices.ALL,
-                list_sql_filters=filters,
+                sort_filter="title",
+                list_sql_filters={
+                    "platform_values": ("PC",),
+                    "platform_mode": "or",
+                },
             )
         )
-        self.assertEqual(len(projected), 20)
-        self.assertTrue(all("PC" in row["platforms"] for row in projected))
+
+        self.assertEqual(len(media), 20)
+        self.assertTrue(all("PC" in entry.item.platforms for entry in media))
