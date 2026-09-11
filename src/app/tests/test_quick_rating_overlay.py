@@ -111,7 +111,7 @@ def test_history_card_uses_shared_quick_rating_component():
         settings.BASE_DIR / "templates" / "app" / "components" / "history_card.html"
     ).read_text(encoding="utf-8")
 
-    assert "quick_rating_overlay_v4_history_shared_component" in template
-    assert 'include "app/components/media_card_rating.html"' in template
-    assert "quick_rating_media_type=entry.media_type" in template
-    assert "quick_rating_instance_id=entry.instance_id" in template
+    assert "quick_rating_overlay_v4_history_shared_component" in template  # noqa: S101
+    assert 'include "app/components/media_card_rating.html"' in template  # noqa: S101
+    assert "quick_rating_media_type=entry.media_type" in template  # noqa: S101
+    assert "quick_rating_instance_id=entry.instance_id" in template  # noqa: S101
