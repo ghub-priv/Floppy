@@ -114,7 +114,11 @@ class CeleryDispatchRoutingTests(SimpleTestCase):
     """Exercise every non-eager dispatch path against the real route merge."""
 
     def setUp(self):
-        self.app = Celery("celery-priority-dispatch-test", broker="memory://")
+        self.app = Celery(
+            "celery-priority-dispatch-test",
+            broker="memory://",
+            set_as_current=False,
+        )
         self.app.conf.update(
             task_always_eager=False,
             task_default_priority=settings.CELERY_TASK_DEFAULT_PRIORITY,
@@ -127,18 +131,26 @@ class CeleryDispatchRoutingTests(SimpleTestCase):
         self.background_task = self.app.task(
             name="Backfill item metadata",
             ignore_result=True,
+            shared=False,
+            lazy=False,
         )(task_body)
         self.followup_task = self.app.task(
             name="Import from Radarr (Recurring)",
             ignore_result=True,
+            shared=False,
+            lazy=False,
         )(task_body)
         self.interactive_task = self.app.task(
             name="Process media server webhook",
             ignore_result=True,
+            shared=False,
+            lazy=False,
         )(task_body)
         self.fallback_task = self.app.task(
             name="Unclassified priority test task",
             ignore_result=True,
+            shared=False,
+            lazy=False,
         )(task_body)
         self.app.finalize()
 
