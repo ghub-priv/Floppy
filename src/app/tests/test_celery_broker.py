@@ -173,9 +173,12 @@ class CeleryDispatchRoutingTests(SimpleTestCase):
         )
 
         for name, dispatch, expected_priority in cases:
-            with self.subTest(dispatch=name):
-                call = self._dispatch_and_capture(dispatch)
-                self.assertEqual(self._priority(call), expected_priority)
+            call = self._dispatch_and_capture(dispatch)
+            self.assertEqual(
+                self._priority(call),
+                expected_priority,
+                msg=f"Unexpected priority for {name}",
+            )
 
         entry = ScheduleEntry(
             name="background-beat",
