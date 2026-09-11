@@ -74,3 +74,18 @@ class GamePlatformSqlPaginationTests(TestCase):
 
         self.assertEqual(len(media), 20)
         self.assertTrue(all("PC" in entry.item.platforms for entry in media))
+
+    def test_mapping_platform_filters_also_disable_sql_pagination(self):
+        """Smart-list mappings must receive the same alias-safety guard."""
+        for mapped_filter in (
+            {"platform": "PC"},
+            {"platforms": ("PC",)},
+        ):
+            with self.subTest(mapped_filter=mapped_filter):
+                self.assertFalse(
+                    can_paginate_in_sql(
+                        mapped_filter,
+                        MediaTypes.GAME.value,
+                        "title",
+                    )
+                )
