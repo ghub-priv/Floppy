@@ -297,6 +297,13 @@ class IntegrationTest(StaticLiveServerTestCase):
                 """,
             )
 
+            # The toggle request's htmx:afterRequest handler starts a second,
+            # asynchronous HTMX GET to refresh the list grid. Wait for that
+            # refresh response to dispatch its HX-Trigger event before asserting
+            # exact request/event counts; awaiting the POST alone does not await
+            # the nested refresh request.
+            page.wait_for_function("window.__listCountUpdates === 1")
+
             self.assertEqual(len(toggle_requests), 1)
             self.assertEqual(toggle_statuses, [200])
             self.assertEqual(len(refresh_requests), 1)
