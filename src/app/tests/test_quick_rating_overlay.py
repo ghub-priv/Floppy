@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from django.conf import settings
+
 from app.models import MediaTypes
 from app.templatetags import quick_rating
 
@@ -102,3 +104,14 @@ def test_podcast_remains_excluded(monkeypatch):
 
     assert result["enabled"] is False
     assert result["reason"] == "specialised_score_path"
+
+
+def test_history_card_uses_shared_quick_rating_component():
+    template = (
+        settings.BASE_DIR / "templates" / "app" / "components" / "history_card.html"
+    ).read_text(encoding="utf-8")
+
+    assert "quick_rating_overlay_v4_history_shared_component" in template
+    assert 'include "app/components/media_card_rating.html"' in template
+    assert "quick_rating_media_type=entry.media_type" in template
+    assert "quick_rating_instance_id=entry.instance_id" in template
