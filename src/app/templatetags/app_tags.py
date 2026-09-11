@@ -436,6 +436,19 @@ def safe_attr(obj, attr):
     return getattr(obj, attr, None)
 
 
+@register.filter
+def safe_count(value):
+    """Coerce a value to an int for use as a blocktranslate 'count', defaulting to 0.
+
+    blocktranslate's count argument must be an int/float/Decimal; a non-numeric
+    value (e.g. bad provider metadata) would otherwise raise a TemplateSyntaxError.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _normalize_title_value(value):
     return Item._normalize_title_value(value)
 

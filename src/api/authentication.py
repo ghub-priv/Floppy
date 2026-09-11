@@ -8,10 +8,24 @@ from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import BasePermission
 
+from api.scopes import ANY_SCOPE, NEVER, resolve_required_scope
 from integrations.models import IntegrationToken
 from users.models import User
 
-from .integration_scopes import authorize_integration_request
+# Bound how often a request writes ``last_used_at``. Every authenticated request
+# would otherwise write a row, which is the hot path for a scrobbling client.
+LAST_USED_WRITE_INTERVAL = timedelta(minutes=5)
+
+
+def _touch_last_used(token: IntegrationToken) -> None:
+    """Record token use, at most once per :data:`LAST_USED_WRITE_INTERVAL`."""
+    now = timezone.now()
+    if token.last_used_at and now - token.last_used_at < LAST_USED_WRITE_INTERVAL:
+        return
+    # Filtered UPDATE rather than save(): concurrent requests collapse into one
+    # write instead of racing, and no other field can be clobbered.
+    IntegrationToken.objects.filter(pk=token.pk).update(last_used_at=now)
+    token.last_used_at = now
 
 
 def authenticate_token(raw_token: str):
@@ -31,6 +45,7 @@ def authenticate_token(raw_token: str):
         if not integration_token.is_valid():
             msg = "Invalid token"
             raise AuthenticationFailed(msg)
+        _touch_last_used(integration_token)
         return (integration_token.user, integration_token)
 
     try:
@@ -39,24 +54,6 @@ def authenticate_token(raw_token: str):
         msg = "Invalid token"
         raise AuthenticationFailed(msg) from None
     return (user, None)
-
-
-def _mark_integration_token_used(token):
-    """Record recent credential use without writing on every API request."""
-    now = timezone.now()
-    cutoff = now - timedelta(minutes=5)
-    if token.last_used_at is None or token.last_used_at < cutoff:
-        IntegrationToken.objects.filter(pk=token.pk).update(last_used_at=now)
-        token.last_used_at = now
-
-
-def authenticate_and_authorize(request, raw_token: str):
-    """Authenticate a credential and enforce IntegrationToken scope policy."""
-    user, auth = authenticate_token(raw_token)
-    if isinstance(auth, IntegrationToken):
-        authorize_integration_request(request, auth)
-        _mark_integration_token_used(auth)
-    return (user, auth)
 
 
 class BearerAuthentication(BaseAuthentication):
@@ -73,7 +70,7 @@ class BearerAuthentication(BaseAuthentication):
         if len(parts) != 2 or parts[0].lower() not in self.keywords:  # noqa: PLR2004
             return None
         token = parts[1]
-        return authenticate_and_authorize(request, token)
+        return authenticate_token(token)
 
 
 class ListenBrainzTokenAuthentication(BaseAuthentication):
@@ -103,7 +100,7 @@ class ListenBrainzTokenAuthentication(BaseAuthentication):
         if len(parts) != 2 or parts[0].lower() != self.keyword.lower():  # noqa: PLR2004
             return None
         token = parts[1]
-        return authenticate_and_authorize(request, token)
+        return authenticate_token(token)
 
 
 class APIKeyAuthentication(BaseAuthentication):
@@ -114,13 +111,16 @@ class APIKeyAuthentication(BaseAuthentication):
         auth = request.headers.get("X-API-Key")
         if not auth:
             return None
-        return authenticate_and_authorize(request, auth.strip())
+        return authenticate_token(auth.strip())
 
 
 class HasScope(BasePermission):
-    """Permission class to check whether request.auth grants a required scope.
+    """Enforce the scope map against the credential the request authenticated with.
 
-    Legacy tokens (request.auth is None) have full access to all scopes.
+    Session logins and legacy ``User.token`` credentials carry no token object
+    (``request.auth is None``) and keep full access. A scoped ``IntegrationToken``
+    must hold the scope ``api.scopes`` maps to this view and method; an unmapped
+    endpoint is denied, so a new route cannot silently become reachable.
     """
 
     required_scope = None
@@ -134,11 +134,52 @@ class HasScope(BasePermission):
         """Return True if the request user and token scopes satisfy requirements."""
         if not request.user or not request.user.is_authenticated:
             return False
-        if request.auth is None:
+
+        token = request.auth
+        if token is None or not hasattr(token, "has_scope"):
             return True
-        if hasattr(request.auth, "has_scope"):
-            scope = getattr(view, "required_scope", self.required_scope)
-            if not scope:
-                return True
-            return request.auth.has_scope(scope)
-        return False
+
+        scope = self.required_scope or resolve_required_scope(view, request.method)
+        if scope == ANY_SCOPE:
+            return True
+        if scope is None or scope == NEVER:
+            return False
+        return token.has_scope(scope)
+
+
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+class CanWriteBoundList(BasePermission):
+    """Restrict a scoped token's list writes to the lists it is bound to.
+
+    Installed globally rather than per view: there are thirteen list-writing
+    endpoints across two modules, and a per-view opt-in is a control that gets
+    forgotten the fourteenth time.
+
+    Two rules:
+
+    - a token with a populated ``writable_list_ids`` may write only those lists
+    - no external token may write a smart list, whatever it is bound to, because
+      a computed list's contents come from its rules and an external write would
+      be silently recomputed away
+    """
+
+    def has_permission(self, request, view):
+        """Return whether this request may write the list it names."""
+        token = request.auth
+        if token is None or not hasattr(token, "may_write_list"):
+            return True
+        if request.method in SAFE_METHODS:
+            return True
+
+        list_id = (getattr(view, "kwargs", None) or {}).get("list_id")
+        if list_id is None:
+            return True
+
+        if not token.may_write_list(list_id):
+            return False
+
+        from lists.models import CustomList
+
+        return not CustomList.objects.filter(pk=list_id, is_smart=True).exists()

@@ -6,6 +6,7 @@ import datetime
 from collections.abc import Iterable
 from itertools import batched
 
+from dateutil.relativedelta import relativedelta
 from django.apps import apps
 from django.db import connection
 from django.db.models import Exists, OuterRef, Q
@@ -25,11 +26,17 @@ SMART_FILTER_KEYS = (
     "year",
     "completed_date_from",
     "completed_date_to",
+    "completed_date_within",
+    "completed_date_within_unit",
     "release",
     "release_date_from",
     "release_date_to",
+    "release_date_within",
+    "release_date_within_unit",
     "date_added_from",
     "date_added_to",
+    "date_added_within",
+    "date_added_within_unit",
     "source",
     "search",
     "sort",
@@ -59,11 +66,17 @@ SMART_FILTER_DEFAULTS = {
     "year": "",
     "completed_date_from": "",
     "completed_date_to": "",
+    "completed_date_within": "",
+    "completed_date_within_unit": "days",
     "release": "all",
     "release_date_from": "",
     "release_date_to": "",
+    "release_date_within": "",
+    "release_date_within_unit": "days",
     "date_added_from": "",
     "date_added_to": "",
+    "date_added_within": "",
+    "date_added_within_unit": "days",
     "source": "",
     "search": "",
     "sort": "",
@@ -85,6 +98,20 @@ MAX_RATING = 10.0
 # Language/country/origin codes at or below this length (e.g. ISO 639-1
 # language codes, ISO 3166 country codes) are displayed uppercased.
 SHORT_CODE_MAX_LENGTH = 3
+
+# "In the last N <unit>", stored relative so a saved smart list keeps meaning
+# the same window as time passes, and resolved to dates at evaluation time.
+RELATIVE_DATE_UNITS = {"days", "weeks", "months", "years"}
+MAX_RELATIVE_DATE_AMOUNT = 999
+RELATIVE_DATE_FIELDS = ("completed_date", "release_date", "date_added")
+# Ordered for the UI; the template renders these rather than hardcoding labels,
+# so the vocabulary has one definition.
+RELATIVE_DATE_UNIT_CHOICES = (
+    ("days", "Days"),
+    ("weeks", "Weeks"),
+    ("months", "Months"),
+    ("years", "Years"),
+)
 
 RATING_CHOICES = {"all", "rated", "not_rated"}
 COLLECTION_CHOICES = {"all", "collected", "not_collected"}
@@ -158,6 +185,49 @@ def _normalize_date_filter(value) -> str:
     except ValueError:
         return ""
     return normalized
+
+
+def _normalize_relative_amount(value) -> str:
+    """Return a positive whole-number window size, or empty string."""
+    if value in (None, ""):
+        return ""
+    try:
+        amount = int(str(value).strip())
+    except (TypeError, ValueError):
+        return ""
+    if 1 <= amount <= MAX_RELATIVE_DATE_AMOUNT:
+        return str(amount)
+    return ""
+
+
+def normalize_relative_unit(value) -> str:
+    """Return a supported relative-window unit, defaulting to days."""
+    unit = str(value or "").strip().lower()
+    return unit if unit in RELATIVE_DATE_UNITS else "days"
+
+
+def resolve_relative_date_windows(rules: dict, today=None) -> dict:
+    """Expand "in the last N units" rules into concrete from/to dates.
+
+    Storage stays relative; this runs at evaluation time so a list saved as
+    "completed in the last week" still means that a month from now. A relative
+    window wins over any absolute from/to on the same field - the UI clears one
+    when the other is set, but a hand-built payload could carry both.
+    """
+    if not any(rules.get(f"{field}_within") for field in RELATIVE_DATE_FIELDS):
+        return rules
+
+    resolved = dict(rules)
+    today = today or timezone.localdate()
+    for field in RELATIVE_DATE_FIELDS:
+        amount = _normalize_relative_amount(resolved.get(f"{field}_within"))
+        if not amount:
+            continue
+        unit = normalize_relative_unit(resolved.get(f"{field}_within_unit"))
+        start = today - relativedelta(**{unit: int(amount)})
+        resolved[f"{field}_from"] = start.isoformat()
+        resolved[f"{field}_to"] = today.isoformat()
+    return resolved
 
 
 def _release_date_from_value(value):
@@ -371,6 +441,23 @@ def normalize_rule_payload(payload, owner):
     completed_date_to = _normalize_date_filter(
         _payload_get(payload, "completed_date_to", "")
     )
+    relative_windows = {}
+    for field in RELATIVE_DATE_FIELDS:
+        amount = _normalize_relative_amount(
+            _payload_get(payload, f"{field}_within", "")
+        )
+        relative_windows[f"{field}_within"] = amount
+        relative_windows[f"{field}_within_unit"] = normalize_relative_unit(
+            _payload_get(payload, f"{field}_within_unit", ""),
+        )
+    # A relative window and an absolute range on the same field are mutually
+    # exclusive; keeping both would leave the stored rule ambiguous.
+    if relative_windows["completed_date_within"]:
+        completed_date_from = completed_date_to = ""
+    if relative_windows["release_date_within"]:
+        release_date_from = release_date_to = ""
+    if relative_windows["date_added_within"]:
+        date_added_from = date_added_to = ""
 
     year = str(_payload_get(payload, "year", "") or "").strip().lower()
     if year and year != "unknown" and not year.isdigit():
@@ -427,6 +514,7 @@ def normalize_rule_payload(payload, owner):
         "release_date_to": release_date_to,
         "date_added_from": date_added_from,
         "date_added_to": date_added_to,
+        **relative_windows,
         "source": source,
         "search": str(_payload_get(payload, "search", "") or "").strip(),
         "sort": sort,
@@ -945,6 +1033,7 @@ def collect_matching_item_ids(
     build iterating several rows/media types) reuse a single collection scan
     instead of re-querying `CollectionEntry` for every row.
     """
+    normalized_rules = resolve_relative_date_windows(normalized_rules)
     target_media_types = _target_media_types(
         owner, normalized_rules.get("media_types", [])
     )
@@ -1093,6 +1182,8 @@ def item_matches_rules(
     """Return whether a single item currently matches a normalized rule set for an owner."""
     if not owner or not item:
         return False
+
+    normalized_rules = resolve_relative_date_windows(normalized_rules)
 
     list_ids = normalized_rules.get("list") or []
     if list_ids:
@@ -1441,6 +1532,10 @@ def build_rule_filter_data(
         ],
         "show_providers": bool(region and region != "UNSET")
         and any(media_type in PROVIDER_MEDIA_TYPES for media_type in target_media_types),
+        "relative_date_units": [
+            {"value": value, "label": label}
+            for value, label in RELATIVE_DATE_UNIT_CHOICES
+        ],
     }
 
     if has_unknown_year:

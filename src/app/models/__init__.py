@@ -75,6 +75,7 @@ from app.models.podcast import (
     PodcastShowTracker,
 )
 from app.models.post_watch import PostWatchDismissal
+from app.models.progress_change import ProgressChange, ProgressChangeKind
 from app.models.provider_credential import (
     InstanceProviderCredential,
     UserProviderCredential,
@@ -95,6 +96,10 @@ from app.models.watch_state import (
     WatchStateSequence,
     calculate_state_digest,
 )
+
+# Register custom non-media models before django.contrib.admin autodiscovery
+# reaches app.admin's generic MediaAdmin fallback.
+from app import custom_model_admin as _custom_model_admin  # noqa: F401
 
 __all__ = [
     "CREDITS_BACKFILL_VERSION",
@@ -158,6 +163,8 @@ __all__ = [
     "PodcastShow",
     "PodcastShowTracker",
     "PostWatchDismissal",
+    "ProgressChange",
+    "ProgressChangeKind",
     "ProviderMetadataStatus",
     "RatingIntelligencePreference",
     "RewatchAlreadyCompleteError",

@@ -28,6 +28,10 @@ from app.models import Item, MediaTypes, Status
 from app.providers import services
 from app.services import metadata_resolution
 from app.templatetags.app_tags import media_type_readable_plural
+from integrations.upload_staging import (
+    enqueue_staged_task,
+    stage_uploaded_file,
+)
 from lists import smart_rules
 from lists import tasks as list_tasks
 from lists.forms import CustomListForm
@@ -321,7 +325,29 @@ def import_list_csv(request):
         messages.error(request, gettext("Select a CSV file to import."))
         return redirect("lists")
 
-    list_tasks.import_list_csv_task.delay(request.user.id, csv_file.read(), "new")
+    try:
+        staged_file = str(stage_uploaded_file(csv_file))
+    except OSError:
+        logger.exception("Could not stage custom list CSV upload")
+        messages.error(
+            request,
+            "The upload could not be queued. Check available disk space and try again.",
+        )
+        return redirect("lists")
+
+    try:
+        enqueue_staged_task(
+            list_tasks.import_list_csv_task,
+            request.user.id,
+            staged_file,
+            "new",
+            staged_paths=(staged_file,),
+        )
+    except Exception:
+        logger.exception("Could not queue custom list CSV import")
+        messages.error(request, "The list import could not be queued. Try again.")
+        return redirect("lists")
+
     messages.info(request, gettext("List import started in the background."))
     return redirect("lists")
 

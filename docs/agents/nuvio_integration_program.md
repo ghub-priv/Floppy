@@ -2,7 +2,7 @@
 
 **Status:** Reviewed programme plan, reconciled against implementation
 **Review date:** 2026-08-15
-**Reconciliation date:** 2026-09-06
+**Reconciliation date:** 2026-09-08 (delivery log current)
 **Floppy baseline:** `17dc7c8e0eaae82603b98bd084abd0131ee6c1c1` (`latest`)
 **Prior baseline:** `1bb6999a539679a27502c6514c3fdfec70f17091`
 **Programme issue:** #532
@@ -43,6 +43,80 @@ Start after Release A's server contract is stable:
 
 Do not combine both trains in one release or one pull request.
 
+## Delivery log
+
+Recorded as work lands, so the ledger below stays a statement about the code
+rather than about the plan. Two threads worked this programme in parallel;
+"other thread" marks work this document did not drive.
+
+| Item | State | Evidence |
+|---|---|---|
+| A0 scope enforcement | Done | `api/scopes.py`, `HasScope` global, coverage test over every routed view |
+| A1 credential lifecycle | Done | Settings → Integrations → App tokens; `users/tests/views/test_integration_tokens.py` |
+| A2 bindings | Done (other thread) | `SyncBinding`, `SyncCheckpoint`, `integrations/state/identity.py` |
+| A3 receipts | Done | Binding-scoped receipts, retention task, `test_receipt_retention.py` |
+| A4 ordered changes | Done | Watched-state feed (other thread) + `ProgressChange` and `/sync/progress-changes/` |
+| A4 checkpoints/retention | Done | `integrations/state/checkpoints.py`, `_change_log.py` compaction |
+| A5 watched state | Done (other thread) | `WatchState`, apply algorithm, outbound outbox |
+| A6 origin and unresolved | Done (other thread) | `origin_key`, `UnresolvedExternalReference`, `StateConflict` |
+| A7 diagnostics | Done | Connection position, lag, failed deliveries, unresolved counts |
+| A7 dry-run preview | Blocked | `_reconcile_binding` is still a stub; provider enumeration has not landed, so a preview would preview nothing |
+| A8 stabilization | Partial | Per-change gates plus a full app-label sweep and a SQLite upgrade replay from v26.9.3. **Postgres not run: no local server.** Container matrix not run |
+| Adoption kit | Done | `docs/integrations/nuvio-client-guide.md` + `api.tests.test_nuvio_conformance` |
+| B1 catalog grants | Done | `CatalogGrant`, revocable per-install add-on credential |
+| B2 catalogs and meta | Done | `meta` resource, scoped to the user's own library |
+| B3 metadata projections | Done | `app/services/metadata_projection.py`, `Item.metadata_refreshed_at` |
+| B4 safe fetch | Done | `integrations/safe_fetch.py`, `docs/architecture/outbound-fetch.md` |
+| B5 declarative add-ons | Done | `RemoteAddon`, `addon_manifest.py`, `addons.py` |
+| B6 collections | Done | `lists/collection_descriptor.py` |
+| B7 writable list bindings | Done | `IntegrationToken.writable_list_ids`, `CanWriteBoundList` |
+| B8-B9 metadata overrides | **Not done — blocked by design** | See below |
+
+### B9 is blocked, and the blocker is structural
+
+Floppy writes a manual metadata edit onto the `Item` row itself. By the time a
+value reaches a reader, "the provider said this" and "a person typed this" are
+the same field, and nothing can tell them apart.
+
+So B9 is not a projection problem, it is a write-path problem: custom metadata
+has to be stored separately from provider metadata before anything can honour
+the rule that a refresh must not overwrite a user's correction. That change
+touches the manual-item metadata path across forms, views and the detail
+builders, and it needs its own plan.
+
+Until it lands, `metadata_projection` reports `authorship: "unseparated"` rather
+than implying a split it cannot make, and **no code should use the projection to
+decide whether a refresh may overwrite a field**.
+
+### Corrections found while building
+
+- Declared token scopes were never enforced: `HasScope` existed and no view
+  used it. Fixed in A0.
+- Scoped tokens could not be created outside a shell. Fixed in A1.
+- Receipts were unique per user, so two devices minting the same client event
+  id collided. Fixed in A3.
+- `SyncCheckpoint` had no writer, so the change log had no safe watermark and
+  could never be compacted. Fixed alongside A4.
+- Adding the watched-state endpoints left them unmapped, and unmapped means
+  denied: the change feed was unreachable by the clients it exists for. Caught
+  by the A0 coverage test, fixed the same day.
+- The tracking preset lacked `sync:read`, so a default token was denied the
+  change feed. Fixed.
+- The add-on install URL carried the account token in its path, so revoking it
+  broke every integration at once. Fixed in B1.
+- Nothing exposed a binding's `origin_key`, so no client could name itself and
+  no checkpoint could ever be recorded. Fixed with the A7 diagnostics.
+
+### Known deviations, recorded rather than hidden
+
+- A replayed idempotent response loses datetime microseconds: the stored copy
+  is re-encoded with `DjangoJSONEncoder`. Same result, lower precision.
+- `403` covers both a dead credential and a missing scope. DRF downgrades
+  authentication failures without a challenge, and `api.tests.test_authentication`
+  asserts `403` across every protected endpoint, so correcting it to `401` is an
+  API break that needs a deliberate decision. The client guide documents the
+  workaround.
+
 ## Reconciliation ledger
 
 Every capability below was checked against `latest` at the reconciliation baseline. `Implemented` means present with tests. `Partial` means present but short of the contract this programme requires. `Missing` means no production code exists.
@@ -65,12 +139,12 @@ Every capability below was checked against `latest` at the reconciliation baseli
 | Scrobble ingest | Implemented | `^scrobble/?$` (`src/api/fork_views_scrobble.py`); start/pause non-durable, completed stop creates history. Baseline tests: `src/api/tests/test_fork_nuvio_baseline.py`. |
 | Saved items / watched state / history API | Implemented | `^collection/`, `^history/`, per-episode `watch`/`drop`/`score`, bulk episodes (`src/api/fork_urls.py`); `src/api/tests/test_fork_tracking.py`. |
 | Delta sync | Partial | `?updated_since=` on playback progress only (`src/api/fork_views_playback.py:322-565`, backed by `position_updated_at`, migration `app/0142`). Timestamp-ordered, not server-sequenced. No delta on saved items, watched state, or history. |
-| Explicit deletes / tombstones | Missing | No delete events, no tombstones anywhere. A client cannot learn that an item was removed except by full comparison, which the state policy forbids treating as a delete. |
-| `SyncBinding` (user + external client/profile) | Missing | `IntegrationToken.client_identifier` is a free-text field with no approval, no profile, no capability set, no direction set, and no reapproval-on-profile-change. |
-| `SyncCheckpoint` | Missing | No server-side cursor state. |
+| Explicit deletes / tombstones | Partial (watched state) | `WatchStateChange.kind` carries an explicit `delete`, and absence is never inferred as one. Saved items and history still have no tombstones. |
+| `SyncBinding` (user + external client/profile) | Implemented (watched state) | `integrations.models.SyncBinding`, migration `integrations/0037`. Approval is per-capability *and* per-direction, and both are required before a write. Minted `origin_key` (not derived, so narrowing `instance_key` cannot orphan changes already stamped with it). Profile change forces reapproval. `integrations/0038` maps Jellyfin's existing toggles across without broadening: `push_watched_enabled` defaults on but grants no write direction without a schedule. Tests: `src/integrations/tests/test_state_apply.py`. |
+| `SyncCheckpoint` | Partial | `integrations.models.SyncCheckpoint` exists with `(binding, resource, direction)` uniqueness and a `provider_cursor` for native cursors. Not yet advanced by a real reconciliation pass — provider enumeration lands with each adapter. |
 | Opaque cursor contract | Missing | No cursor issuance, validation, binding check, or expiry response. |
-| Origin derivation / loop prevention | Missing | Nothing derives change origin from the authenticated credential, and nothing suppresses reflected changes. |
-| `UnresolvedExternalReference` | Missing | Unresolvable ids return 404 (`test_fork_nuvio_baseline.py:106`) and are not recorded, deduplicated, or surfaced. |
+| Origin derivation / loop prevention | Implemented (watched state) | Every change carries `origin_kind`, `origin_key` and a `correlation_id`. `enqueue_deliveries` skips the binding a change came from, and echo detection correlates a durable delivery's read-back digest rather than a cache timeout. Tests: `src/integrations/tests/test_state_outbound.py`. |
+| `UnresolvedExternalReference` | Implemented | `integrations.models.UnresolvedExternalReference`, deduplicated by `(binding, namespace, value, reason_code)` with an occurrence count and no secret-bearing payload. Written when an outbound delivery cannot resolve an item unambiguously. |
 | Reconciliation preview / apply | Missing | `src/app/reconcile_state.py` is internal library-state repair, not client reconciliation. No dry run, no categorized diff, no diagnostics surface. |
 | Conformance fixtures | Missing | `src/api/tests/test_fork_nuvio_baseline.py` is a five-test regression baseline, not a publishable kit. |
 | Published contract artifacts | Implemented | `src/api/contracts/openapi.yaml`, `asyncapi.json`, `context.jsonld`; regeneration and validation commands in `AGENTS.md`. AsyncAPI channels: Plex, Jellyfin, Emby, Jellyseerr, Seerr, Kodi, Stremio subtitles, ListenBrainz. |
@@ -100,7 +174,9 @@ Every capability below was checked against `latest` at the reconciliation baseli
 
 ### Reconciliation conclusion
 
-The security and delivery foundation landed. The **ordered-change layer did not**: no bindings, no sequences, no cursors, no tombstones, no reconciliation. Everything Release A still owes depends on that layer, so it is the next thing built.
+The security and delivery foundation landed. The **ordered-change layer did not**, and is now being built: the watched-state synchronization program supplies bindings, per-user commit-ordered sequences, an ordered change feed, explicit deletes, origin derivation and loop prevention, and a durable outbox — for watched state specifically. See `docs/architecture/watched-state-sync.md`.
+
+Still owed after that work: cursors as opaque validated tokens rather than raw sequences; the same layer extended to saved items and history; reconciliation preview/apply; and a publishable conformance kit. Receipt uniqueness is still scoped to `(user, client_event_id)` rather than to the binding — a unique-constraint change on a live idempotency table serving three production endpoints, which needs its own patch and rollback story.
 
 Two findings are corrections rather than gaps, and are pulled forward:
 

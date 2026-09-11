@@ -9,6 +9,7 @@
      filter_search_name  wire name for the search box (default "search")
      filter_search_var   Alpine state var behind it (default "search")
      filter_show_ranges  emit the rating/release-date/date-added range fields
+     filter_show_completed_date  the page supports completed-date filtering
      filter_platform_multi  platform is a multi-select with a platform_mode
      filter_show_media_types  emit the media-type multi-select fields
      filter_edit_smart_rules  emit the smart-list edit flag
@@ -36,13 +37,29 @@
   <input type="hidden" name="genre" x-model="genre">
   <input type="hidden" name="implied_genre" x-model="implied_genre">
   <input type="hidden" name="year" x-model="year">
-  <input type="hidden" name="completed_date_from" x-model="completed_date_from">
-  <input type="hidden" name="completed_date_to" x-model="completed_date_to">
+  {% if filter_show_completed_date %}
+    <input type="hidden" name="completed_date_from" x-model="completed_date_from">
+    <input type="hidden" name="completed_date_to" x-model="completed_date_to">
+    <input type="hidden"
+           name="completed_date_within"
+           x-model="completed_date_within">
+    <input type="hidden"
+           name="completed_date_within_unit"
+           x-model="completed_date_within_unit">
+  {% endif %}
   {% if filter_show_ranges %}
     <input type="hidden" name="release_date_from" x-model="release_date_from">
     <input type="hidden" name="release_date_to" x-model="release_date_to">
+    <input type="hidden" name="release_date_within" x-model="release_date_within">
+    <input type="hidden"
+           name="release_date_within_unit"
+           x-model="release_date_within_unit">
     <input type="hidden" name="date_added_from" x-model="date_added_from">
     <input type="hidden" name="date_added_to" x-model="date_added_to">
+    <input type="hidden" name="date_added_within" x-model="date_added_within">
+    <input type="hidden"
+           name="date_added_within_unit"
+           x-model="date_added_within_unit">
   {% endif %}
   <input type="hidden" name="release" x-model="release">
   <input type="hidden" name="source" x-model="source">
@@ -62,7 +79,9 @@
   <input type="hidden" name="origin" x-model="origin">
   <input type="hidden" name="format" x-model="format">
   <input type="hidden" name="author" x-model="author">
-  <input type="hidden" name="provider" x-model="provider">
+  {% if filter_data.show_providers %}
+    <input type="hidden" name="provider" x-model="provider">
+  {% endif %}
   <template x-for="t in selectedTags" :key="`tag-${t}`">
     <input type="hidden" name="tag" :value="t">
   </template>

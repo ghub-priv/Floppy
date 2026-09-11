@@ -367,8 +367,6 @@
                     </a>
                   </li>
 
-                  {% include "app/components/local_tool_nav.html" %}
-
                   {% url 'tag_index' as tag_index_url %}
                   <li>
                     <a href="{{ tag_index_url }}"
@@ -833,5 +831,6 @@
     <script src="{% static 'js/collectionCustomFields.js' %}{% get_static_file_mtime 'js/collectionCustomFields.js' %}"></script>
     <script src="{% static 'js/searchShortcut.js' %}{% get_static_file_mtime 'js/searchShortcut.js' %}"></script>
     <script src="{% static 'js/searchAutocomplete.js' %}{% get_static_file_mtime 'js/searchAutocomplete.js' %}"></script>
+    <script src="{% static 'js/horizontal-scroll.js' %}{% get_static_file_mtime 'js/horizontal-scroll.js' %}"></script>
   </body>
 </html>

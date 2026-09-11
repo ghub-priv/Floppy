@@ -100,3 +100,35 @@ class AboutViewTests(TestCase):
 
         self.assertNotIn("{#", body)
         self.assertNotIn("#}", body)
+
+    def test_both_platform_panels_are_served_for_no_javascript_clients(self):
+        """Platform narrowing is a JS enhancement; the HTML must carry both."""
+        response = self.client.get(reverse("about"))
+        soup = BeautifulSoup(response.content, "html.parser")
+        section = soup.find("section", attrs={"aria-labelledby": "about-install-heading"})
+
+        panels = {h.get_text(strip=True): h.find_parent("div") for h in section.find_all("h4")}
+
+        self.assertEqual(set(panels), {"iOS and iPadOS", "Android"})
+        for name, panel in panels.items():
+            with self.subTest(panel=name):
+                # No inline display:none, or a scriptless browser sees nothing.
+                self.assertNotIn("display: none", panel.get("style") or "")
+        self.assertIn("platform: 'all'", section.get("x-data"))
+
+    def test_table_scroll_wrappers_contain_their_absolute_children(self):
+        """sr-only spans are absolutely positioned.
+
+        Without `relative` on the scroll wrapper they resolve against the
+        card, escape the scroller, and push the page 51px wider than a
+        390px viewport.
+        """
+        response = self.client.get(reverse("about"))
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        wrappers = soup.select("div.overflow-x-auto")
+
+        self.assertEqual(len(wrappers), 4)
+        for wrapper in wrappers:
+            with self.subTest(classes=wrapper.get("class")):
+                self.assertIn("relative", wrapper.get("class"))

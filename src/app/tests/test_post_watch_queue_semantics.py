@@ -23,7 +23,7 @@ from app.models import (
     Sources,
 )
 
-post_watch_migration = import_module("app.migrations.0179_postwatchdismissal")
+post_watch_migration = import_module("app.migrations.0181_postwatchdismissal")
 
 
 class PostWatchQueueSemanticsTests(TestCase):

@@ -36,12 +36,17 @@ class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
     def process_payload(self, payload, user):
         """Process a Kodi payload while recording best-effort health telemetry."""
         record_integration_health_event(user, payload, "received")
+
+        event_type = payload.get("event")
+        if "rating" not in payload and event_type in KODI_LIVE_ONLY_EVENTS:
+            logger.info("Handling Kodi live-only event type: %s", event_type)
+
         result = super().process_payload(payload, user)
 
         # Rating success is recorded by _process_rating below and ordinary
         # playback success by _process_media. Live-only events deliberately do
         # not enter _process_media, so record their successful handling here.
-        if "rating" not in payload and payload.get("event") in KODI_LIVE_ONLY_EVENTS:
+        if "rating" not in payload and event_type in KODI_LIVE_ONLY_EVENTS:
             record_integration_health_event(user, payload, "success")
         return result
 
@@ -58,7 +63,10 @@ class KodiWebhookProcessor(KodiRuntimeMixin, BaseWebhookProcessor):
         return result
 
     def _is_supported_event(self, event_type):
-        return event_type in KODI_LIVE_EVENT_MAP
+        supported = event_type in KODI_LIVE_EVENT_MAP
+        if not supported:
+            logger.info("Ignoring Kodi webhook event type: %s", event_type)
+        return supported
 
     def _is_played(self, payload):
         if payload.get("event") == KodiEvent.PLAYBACK_END:

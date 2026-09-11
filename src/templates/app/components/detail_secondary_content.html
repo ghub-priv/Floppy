@@ -135,23 +135,9 @@
 
       {# Media Details #}
       <h2 class="text-xl font-bold mb-4">{% translate "Details" %}</h2>
-      {% if watch_provider_region != "UNSET" and watch_providers is not None %}
-        <div class="bg-[var(--color-surface)] p-4 rounded-lg my-4">
-          <h3 class="text-sm font-semibold text-[var(--color-text-muted)] mb-2">{% translate "STREAMING" %}</h3>
-          <div class="flex flex-wrap items-center gap-2 place-content-evenly">
-            {% if watch_providers %}
-              {% for provider in watch_providers %}
-                <img class="size-10 rounded-md"
-                     src="{{ provider.image|image_url }}"
-                     title="{{ provider.provider_name }}"
-                     alt="{{ provider.provider_name }}" />
-              {% endfor %}
-            {% else %}
-              <p>{% translate "No watch providers" %}</p>
-            {% endif %}
-          </div>
-        </div>
-      {% endif %}
+      <div class="hidden md:block">
+        {% include "app/components/detail_watch_providers.html" with placement="desktop" %}
+      </div>
 
       <div class="bg-[var(--color-surface)] p-4 rounded-lg text-center md:text-start">
         {% if media.details.items %}
@@ -425,7 +411,7 @@
                       {% url 'media_details' source=episode.source media_type=episode.media_type media_id=episode.media_id title=episode.title|default:episode.issue_number|slug as ep_detail_url %}
                       {% include "app/components/issue_row.html" %}
                     {% else %}
-                      {% if media_type == MediaTypes.SEASON.value and media.source and media.media_id and media.season_number is not None %}{% if parent_media_type == MediaTypes.ANIME.value %}{% url 'anime_episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% else %}{% url 'episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% endif %}{% elif media_type == MediaTypes.ANIME.value and episode.source and episode.media_id and episode.episode_number %}{% url 'anime_episode_details' source=episode.source media_id=episode.media_id title=media.title|slug season_number=episode.season_number|default:0 episode_number=episode.episode_number as ep_detail_url %}{% endif %}
+                      {% if media_type == MediaTypes.SEASON.value and media.source and media.media_id and media.season_number is not None and episode.episode_number is not None %}{% if parent_media_type == MediaTypes.ANIME.value %}{% url 'anime_episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% else %}{% url 'episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% endif %}{% elif media_type == MediaTypes.ANIME.value and episode.source and episode.media_id and episode.episode_number %}{% url 'anime_episode_details' source=episode.source media_id=episode.media_id title=media.title|slug season_number=episode.season_number|default:0 episode_number=episode.episode_number as ep_detail_url %}{% endif %}
                       {% include "app/components/episode_row.html" %}
                     {% endif %}
                   {% endfor %}
@@ -551,6 +537,10 @@
         {% include "app/components/detail_notes_section.html" %}
       </div>
     {% endif %}
+
+    <div class="md:hidden">
+      {% include "app/components/detail_watch_providers.html" with placement="mobile" %}
+    </div>
 
   </div>
 {% if media.episodes or episodes %}

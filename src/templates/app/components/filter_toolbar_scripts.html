@@ -50,6 +50,19 @@
   // results land one step behind.
   //
   // Callers invoke this from $nextTick, so the form is already up to date.
+  // Summary text for a relative "in the last N units" window, e.g. "Last 7 days".
+  // Returns '' when no window is set, so callers can fall through to the
+  // absolute range or "Any".
+  function relativeWindowLabel(amount, unit) {
+    const n = parseInt(amount, 10);
+    if (!Number.isFinite(n) || n < 1) {
+      return '';
+    }
+    const singular = { days: 'day', weeks: 'week', months: 'month', years: 'year' };
+    const name = singular[unit] || 'day';
+    return `Last ${n} ${name}${n === 1 ? '' : 's'}`;
+  }
+
   function applyFilterChange(endpoint, target, formId) {
     if (!window.htmx || !endpoint || !target) {
       return;

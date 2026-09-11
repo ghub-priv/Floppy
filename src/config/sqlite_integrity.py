@@ -893,12 +893,15 @@ def create_live_database_snapshot(
         )
     except sqlite3.DatabaseError as error:
         _log(f"[db-snapshot] Could not write a database snapshot: {error}")
-        error_code = getattr(error, "sqlite_errorcode", None)
-        is_corruption = error_code in {
-            sqlite3.SQLITE_CORRUPT,
-            sqlite3.SQLITE_NOTADB,
+        busy = getattr(error, "sqlite_errorcode", None) in {
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
         }
-        if is_corruption or str(error) == "snapshot quick_check did not return 'ok'":
+        if not busy:
+            # Mirrors check_database_integrity's bootstrap-path reporting: a
+            # damaged source database must surface the same recovery-page
+            # report here, not just a log line, or a live snapshot failure
+            # leaves operators with no record of why backups stopped.
             _report_corruption(db_path, str(error))
         return None
     except (OSError, ValueError) as error:

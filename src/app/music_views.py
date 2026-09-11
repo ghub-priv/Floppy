@@ -17,6 +17,7 @@ from app.forms import BulkEpisodeTrackForm
 from app.log_safety import exception_summary
 from app.models import (
     Album,
+    AlbumTracker,
     Artist,
     CollectionEntry,
     Item,
@@ -1284,8 +1285,19 @@ def prefetch_artist_covers(request, artist_id):
                 album_play_counts.get(music.album_id, 0) + play_count
             )
 
+    album_trackers = AlbumTracker.objects.filter(
+        user=request.user,
+        album__in=all_albums,
+    ).select_related("album")
+    album_scores = {
+        tracker.album_id: tracker.score
+        for tracker in album_trackers
+        if tracker.score is not None
+    }
+
     for album in all_albums:
         album.play_count = album_play_counts.get(album.id, 0)
+        album.score = album_scores.get(album.id)
 
     discography_groups = build_discography_groups(all_albums)
     missing_cover_count = sum(1 for album in all_albums if not album.image)

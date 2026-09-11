@@ -108,6 +108,43 @@
                 </span>
               {% endif %}
 
+            <div class="relative min-w-0 flex-1 md:max-w-xs"
+                 x-data="{ open: false }"
+                 @click.away="open = false"
+                 @keydown.escape.window="open = false">
+              <button @click="open = !open"
+                      class="flex h-11 w-full min-w-0 items-center justify-center gap-2 px-4 border border-[var(--color-surface-border)] bg-[var(--color-surface)] text-[var(--color-text)] shadow-sm hover:bg-[var(--color-surface-muted)] rounded-xl transition-colors duration-200 cursor-pointer md:justify-start">
+                <span class="block min-w-0 flex-1 truncate text-sm font-medium">{{ episode.display_episode_number|default:episode_number }}. {{ episode_title }}</span>
+                <div class="h-4 w-4 shrink-0" :class="{ 'rotate-180': open }">{% include "app/icons/chevron-down.svg" with classes="w-full h-full" %}</div>
+              </button>
+              <div x-show="open"
+                   x-transition:enter="transition ease-out duration-200"
+                   x-transition:enter-start="opacity-0 transform scale-95"
+                   x-transition:enter-end="opacity-100 transform scale-100"
+                   x-transition:leave="transition ease-in duration-150"
+                   x-transition:leave-start="opacity-100 transform scale-100"
+                   x-transition:leave-end="opacity-0 transform scale-95"
+                   class="absolute right-1/2 md:right-0 translate-x-1/2 md:translate-x-0 mt-2 w-64 bg-[var(--color-surface)] rounded-md shadow-lg overflow-hidden z-10">
+                <div class="max-h-[300px] overflow-y-auto">
+                  {% for ep in episodes %}
+                    <a href="{% if parent_media_type == MediaTypes.ANIME.value %}{% url 'anime_episode_details' source=source media_id=media_id title=show_title|slug season_number=season_number episode_number=ep.episode_number %}{% else %}{% url 'episode_details' source=source media_id=media_id title=show_title|slug season_number=season_number episode_number=ep.episode_number %}{% endif %}"
+                       hx-boost="true"
+                       class="w-full px-4 py-3 flex items-center space-x-3 hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)] transition-colors duration-200 cursor-pointer {% if ep.episode_number == episode_number %}bg-[var(--color-surface-muted)]{% endif %}">
+                      <div class="w-8 h-8 rounded-full flex items-center justify-center bg-indigo-600 text-white shrink-0">
+                        {{ ep.display_episode_number|default:ep.episode_number }}
+                      </div>
+                      <div class="flex-1 text-left min-w-0">
+                        <div class="text-sm font-medium line-clamp-1">{{ ep.title }}</div>
+                        <div class="text-xs text-[var(--color-text-muted)]">
+                          {{ ep.air_date|user_date_format:user|default_if_none:"Unknown date" }}
+                        </div>
+                      </div>
+                    </a>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+
               {% if next_episode_number %}
                 <a href="{% if parent_media_type == MediaTypes.ANIME.value %}{% url 'anime_episode_details' source=source media_id=media_id title=show_title|slug season_number=season_number episode_number=next_episode_number %}{% else %}{% url 'episode_details' source=source media_id=media_id title=show_title|slug season_number=season_number episode_number=next_episode_number %}{% endif %}"
                    hx-boost="true"

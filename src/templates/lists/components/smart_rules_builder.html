@@ -1,6 +1,6 @@
 {% load i18n %}
 {% url 'list_detail' custom_list.public_reference as list_filter_endpoint %}
-{% include "app/components/filter_form.html" with filter_form_id="smart-filter-form" filter_search_name="q" filter_show_ranges=True filter_platform_multi=False filter_show_media_types=True filter_data=smart_filter_data filter_edit_smart_rules=can_edit %}
+{% include "app/components/filter_form.html" with filter_show_completed_date=True filter_form_id="smart-filter-form" filter_search_name="q" filter_show_ranges=True filter_platform_multi=False filter_show_media_types=True filter_data=smart_filter_data filter_edit_smart_rules=can_edit %}
 
 <div class="flex flex-col gap-3 md:flex-row md:gap-4 mb-6"
      hx-sync="#smart-filter-form:replace">
@@ -61,7 +61,7 @@
     </div>
 
     <div class="contents" x-cloak x-show="!searchMode">
-      {% include "app/components/filter_menu.html" with filter_hx_endpoint=list_filter_endpoint filter_hx_target="#items-view" filter_form_id="smart-filter-form" filter_data_id="smart-filter-data" filter_on_change="onRuleChange(0);" filter_show_ranges=True filter_show_media_types=True filter_data=smart_filter_data %}
+      {% include "app/components/filter_menu.html" with filter_show_completed_date=True filter_hx_endpoint=list_filter_endpoint filter_hx_target="#items-view" filter_form_id="smart-filter-form" filter_data_id="smart-filter-data" filter_on_change="onRuleChange(0);" filter_show_ranges=True filter_show_media_types=True filter_data=smart_filter_data %}
 
     <div class="relative filter-control" x-data="{ open: false }">
       <button class="flex items-center px-2 py-2 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors cursor-pointer"

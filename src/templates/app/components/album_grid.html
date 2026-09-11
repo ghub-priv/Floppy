@@ -10,7 +10,9 @@
         <a href="{{ album|music_album_url }}">
           {# Cover art #}
           {% if album.image and album.image != IMG_NONE %}
-            <img alt="{{ album.title }}"
+            <img id="album-cover-{{ album.id }}"
+                 hx-preserve
+                 alt="{{ album.title }}"
                  class="media-card-poster lazyload w-full aspect-[1/1] object-cover bg-[var(--color-surface-alt)]"
                  data-src="{{ album.image|image_url }}"
                  src="{{ IMG_NONE }}">
