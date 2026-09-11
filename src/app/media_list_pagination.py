@@ -98,12 +98,14 @@ def can_paginate_in_sql(
     # concrete media table name. Django cannot relabel that raw SQL when the
     # filtered media queryset is embedded by get_media_list_item_values(), so
     # the SQL-pagination path can generate stale references such as
-    # app_movie.item_id after the table has been aliased. Keep these filters
-    # on the existing top-level SQL path until that helper is made alias-safe.
+    # app_movie.item_id or app_game.item_id after the table has been aliased.
+    # Keep all filters backed by that helper on the existing top-level SQL
+    # path until the helper is made alias-safe.
     if (
         getattr(filters, "genre", "")
         or getattr(filters, "implied_genre", "")
         or getattr(filters, "language", "")
+        or getattr(filters, "platforms", ())
     ):
         return False
     # provider_region defaults to the sentinel "UNSET" (truthy) and is only
@@ -112,10 +114,6 @@ def can_paginate_in_sql(
     if filters.format or filters.author or filters.provider:
         return False
     if filters.pinned_providers or filters.origin:
-        return False
-    # Game platforms are SQL-filterable (list_sql_filters); every other
-    # media type's platform filtering only happens in Python.
-    if filters.platforms and media_type != MediaTypes.GAME.value:
         return False
     sort_key = sort_filter or ""
     # Season rows derive these values from related episodes in the existing
