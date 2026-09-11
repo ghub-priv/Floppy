@@ -105,12 +105,8 @@ def can_paginate_in_sql(
         getattr(filters, "genre", "")
         or getattr(filters, "implied_genre", "")
         or getattr(filters, "language", "")
+        or getattr(filters, "platforms", ())
     ):
-        return False
-    # Game platforms are SQL-filterable through the game-specific list SQL
-    # filters. Other media types still resolve platform filtering outside the
-    # SQL-pagination path.
-    if getattr(filters, "platforms", ()) and media_type != MediaTypes.GAME.value:
         return False
     # provider_region defaults to the sentinel "UNSET" (truthy) and is only
     # meaningful when filters.provider is also set — checking it on its own

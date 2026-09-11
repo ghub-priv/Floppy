@@ -750,8 +750,8 @@ class MediaListSqlPushdownTests(FloppyApiTestCase):
                 replace(base, format="digital"), MediaTypes.GAME.value, "title",
             ),
         )
-        # Game platforms are SQL-filterable; other types' aren't.
-        self.assertTrue(
+        # JSON-backed platform filters must stay on the alias-safe fallback path.
+        self.assertFalse(
             can_paginate_in_sql(
                 replace(base, platforms=("PC",)), MediaTypes.GAME.value, "title",
             ),
