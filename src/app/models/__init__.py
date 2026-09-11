@@ -97,6 +97,10 @@ from app.models.watch_state import (
     calculate_state_digest,
 )
 
+# Register custom non-media models before django.contrib.admin autodiscovery
+# reaches app.admin's generic MediaAdmin fallback.
+from app import custom_model_admin as _custom_model_admin  # noqa: E402,F401
+
 __all__ = [
     "CREDITS_BACKFILL_VERSION",
     "DISCOVER_MOVIE_METADATA_BACKFILL_VERSION",
