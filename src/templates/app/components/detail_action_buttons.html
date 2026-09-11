@@ -19,6 +19,14 @@
         <div class="order-1 mb-6 flex flex-col gap-3 sm:order-2 sm:flex-row sm:flex-wrap sm:items-center">
           <div class="mt-4 mb-5 flex flex-wrap gap-2">
           {% endif %}
+          {# Kodi Control + Sync v2.7: preserve the accepted r13 action order while reusing a shared component. #}
+          {% if media.source == Sources.TMDB.value %}
+            {% if media_type == MediaTypes.SEASON.value %}
+              {% include "app/components/kodi_play_action.html" with kodi_form_id="kodi-play-form" kodi_status_id="kodi-play-status" kodi_source=media.source kodi_media_type=media_type kodi_media_id=media.media_id kodi_include_season=1 kodi_season_number=media.season_number %}
+            {% elif media_type == MediaTypes.MOVIE.value or media_type == MediaTypes.TV.value %}
+              {% include "app/components/kodi_play_action.html" with kodi_form_id="kodi-play-form" kodi_status_id="kodi-play-status" kodi_source=media.source kodi_media_type=media_type kodi_media_id=media.media_id %}
+            {% endif %}
+          {% endif %}
           {# Keep the hero tracker action full-width on mobile so the split button cannot collapse to content width after flex/layout merges. #}
           <div x-data="{ trackOpen: false }" class="w-full sm:w-auto sm:shrink-0">
             {% if media_type == MediaTypes.PODCAST.value and podcast_show %}
