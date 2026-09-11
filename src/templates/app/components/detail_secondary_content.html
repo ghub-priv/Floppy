@@ -135,23 +135,9 @@
 
       {# Media Details #}
       <h2 class="text-xl font-bold mb-4">{% translate "Details" %}</h2>
-      {% if watch_provider_region != "UNSET" and watch_providers is not None %}
-        <div class="bg-[var(--color-surface)] p-4 rounded-lg my-4">
-          <h3 class="text-sm font-semibold text-[var(--color-text-muted)] mb-2">{% translate "STREAMING" %}</h3>
-          <div class="flex flex-wrap items-center gap-2 place-content-evenly">
-            {% if watch_providers %}
-              {% for provider in watch_providers %}
-                <img class="size-10 rounded-md"
-                     src="{{ provider.image|image_url }}"
-                     title="{{ provider.provider_name }}"
-                     alt="{{ provider.provider_name }}" />
-              {% endfor %}
-            {% else %}
-              <p>{% translate "No watch providers" %}</p>
-            {% endif %}
-          </div>
-        </div>
-      {% endif %}
+      <div class="hidden md:block">
+        {% include "app/components/detail_watch_providers.html" with placement="desktop" %}
+      </div>
 
       <div class="bg-[var(--color-surface)] p-4 rounded-lg text-center md:text-start">
         {% if media.details.items %}
@@ -551,6 +537,10 @@
         {% include "app/components/detail_notes_section.html" %}
       </div>
     {% endif %}
+
+    <div class="md:hidden">
+      {% include "app/components/detail_watch_providers.html" with placement="mobile" %}
+    </div>
 
   </div>
 {% if media.episodes or episodes %}
