@@ -12,10 +12,10 @@
         {% with item|alternative_title:user as resolved_alt_title %}
           {% season_card_title item as resolved_season_card_title %}
           {% with hover_action_mode|default:'standard' as resolved_hover_action_mode %}
-      <div class="media-card {% if secondary_color %}bg-[var(--color-surface-strong)]{% else %}bg-[var(--color-surface)]{% endif %} rounded-lg overflow-hidden shadow-lg relative {% if active %}ring-2 ring-indigo-700{% endif %} {% if from_grid %}hover:ring-2 hover:ring-indigo-500 transition-all {% if resolved_media_type == 'podcast' or resolved_media_type == 'music' %}search-result-card-square{% else %}search-result-card{% endif %}{% endif %} {% if user.media_card_subtitle_display == 'always' %}media-card-subtitle-always{% elif show_episode_identity|default:False and resolved_media_type == MediaTypes.EPISODE.value %}media-card-subtitle-always{% endif %} {% if recommend_mode %}cursor-pointer{% endif %} group"
+      <div class="media-card {% if secondary_color %}bg-[var(--color-surface-strong)]{% else %}bg-[var(--color-surface)]{% endif %} rounded-lg overflow-hidden shadow-lg relative {% if active %}ring-2 ring-indigo-700{% endif %} {% if from_grid %}hover:ring-2 hover:ring-indigo-500 transition-all {% if resolved_media_type == 'podcast' or resolved_media_type == 'music' %}search-result-card-square{% else %}search-result-card{% endif %}{% endif %} {% if user.media_card_subtitle_display == 'always' %}media-card-subtitle-always{% elif show_episode_identity|default:False and resolved_media_type == MediaTypes.EPISODE.value %}media-card-subtitle-always{% endif %} {% if recommend_mode %}cursor-pointer{% endif %}{% if user.clickable_media_cards %} media-card-hide-overlay{% endif %} group"
            data-media-type="{{ item.media_type }}"
            {% if recommend_mode %}hx-get="{% if resolved_search_preview_url %}{{ resolved_search_preview_url }}{% else %}{% url 'recommend_search' recommend_list_id %}{% endif %}?show_preview=true&media_id={{ item.media_id }}&media_type={{ item.media_type }}&source={{ item.source }}&title={{ resolved_item_title|default:title|urlencode }}&image={{ item.image|urlencode }}&q={{ query|urlencode }}&search_media_type={{ media_type|urlencode }}&page={{ page }}" hx-target="{{ resolved_search_modal_target }}" hx-swap="innerHTML"{% endif %}
-           x-data="{ trackOpen: false, listsOpen: false, revealed: false, tapToReveal(e) { if (this.revealed) { if (e.target.closest('button, a, input, select, textarea')) { return; } const link = this.$root.querySelector('.media-card-overlay a[href]') || this.$root.querySelector('a.media-card-title[href]'); if (link) { e.preventDefault(); e.stopPropagation(); link.click(); } return; } if (!window.matchMedia('(pointer: coarse)').matches) { return; } e.preventDefault(); e.stopPropagation(); this.revealed = true; window.dispatchEvent(new CustomEvent('media-card-revealed', { detail: this.$root })); } }"
+           x-data="{ trackOpen: false, listsOpen: false, revealed: false, tapToReveal(e) { if (this.revealed) { if (e.target.closest('button, a, input, select, textarea')) { return; } const link = this.$root.querySelector('.media-card-overlay a[href]') || this.$root.querySelector('a.media-card-title[href]'); if (link) { e.preventDefault(); e.stopPropagation(); link.click(); } return; } if (!window.matchMedia('(pointer: coarse)').matches || this.$root.classList.contains('media-card-hide-overlay') || !this.$root.querySelector('.media-card-overlay'){% if enable_bulk_select %} || this.selectMode{% endif %}) { return; } e.preventDefault(); e.stopPropagation(); this.revealed = true; window.dispatchEvent(new CustomEvent('media-card-revealed', { detail: this.$root })); } }"
            @click.capture="tapToReveal($event)"
            @media-card-revealed.window="if ($event.detail !== $root) revealed = false"
            @click.window="if (revealed && !$root.contains($event.target)) revealed = false"
@@ -185,7 +185,7 @@
 
               <a href="{% if media.album %}{{ media.album|music_album_url }}{% elif media.artist %}{{ media.artist|music_artist_url }}{% elif use_podcast_show|default:False and podcast_show %}{% url 'media_details' source='pocketcasts' media_type='podcast' media_id=podcast_show.podcast_uuid title=podcast_show.slug|default:podcast_show.title|default:podcast_show.podcast_uuid|slug %}{% else %}{{ item|media_url }}{% endif %}" class="absolute inset-0 z-0"></a>
 
-              <div class="relative z-10 flex items-center justify-center space-x-2.5"
+              <div class="relative z-10 flex w-full max-w-full flex-wrap items-center justify-center gap-2.5 px-2"
                    {% if list_ordering_enabled|default:False %}
                      x-show="!isOrderEditing"
                    {% endif %}>
@@ -628,13 +628,13 @@
                          data-progress-text="{{ media.formatted_progress }}/{{ media.formatted_max_progress }}{% if media.item.format != 'audiobook' %} {% translate "pages" %}{% endif %}"
                        {% endif %}
                      {% elif resolved_media_type == MediaTypes.BOOK.value and media.max_progress %}
-                       data-progress-text="{{ media.formatted_max_progress }}{% if media.item.format != 'audiobook' %} {% blocktranslate count count=media.max_progress %}page{% plural %}pages{% endblocktranslate %}{% endif %}"
+                       data-progress-text="{{ media.formatted_max_progress }}{% if media.item.format != 'audiobook' %} {% blocktranslate count count=media.max_progress|safe_count %}page{% plural %}pages{% endblocktranslate %}{% endif %}"
                     {% elif media.max_progress and resolved_media_type != MediaTypes.MOVIE.value %}
                        {% with progress_value=aggregated_progress|default_if_none:media.progress %}
                          {% if progress_value or resolved_media_type == MediaTypes.SEASON.value %}
                            {% if resolved_media_type == MediaTypes.SEASON.value %}
                              {% with season_progress=media.completed_episode_count|default_if_none:0 %}
-                               data-progress-text="{{ season_progress }} / {{ media.max_progress }} {% blocktranslate count count=media.max_progress %}episode{% plural %}episodes{% endblocktranslate %}"
+                               data-progress-text="{{ season_progress }} / {{ media.max_progress }} {% blocktranslate count count=media.max_progress|safe_count %}episode{% plural %}episodes{% endblocktranslate %}"
                              {% endwith %}
                            {% elif user.book_comic_manga_progress_percentage and resolved_media_type == MediaTypes.COMIC.value %}
                              {% widthratio progress_value|default_if_none:0 media.max_progress 100 as percentage %}
@@ -643,16 +643,16 @@
                              {% widthratio progress_value|default_if_none:0 media.max_progress 100 as percentage %}
                              data-progress-text="{{ percentage }}%"
                            {% else %}
-                             data-progress-text="{{ progress_value|default_if_none:0 }} / {{ media.max_progress }}{% if resolved_media_type == MediaTypes.TV.value or resolved_media_type == MediaTypes.SEASON.value %} {% blocktranslate count count=media.max_progress %}episode{% plural %}episodes{% endblocktranslate %}{% elif media.item.media_type|long_unit %} {% with progress_unit=media.item.media_type|long_unit|lower %}{% if media.max_progress == 1 %}{% translate progress_unit context "progress unit" %}{% else %}{% with progress_unit_plural=progress_unit|add:"s" %}{% translate progress_unit_plural context "progress unit" %}{% endwith %}{% endif %}{% endwith %}{% endif %}"
+                             data-progress-text="{{ progress_value|default_if_none:0 }} / {{ media.max_progress }}{% if resolved_media_type == MediaTypes.TV.value or resolved_media_type == MediaTypes.SEASON.value %} {% blocktranslate count count=media.max_progress|safe_count %}episode{% plural %}episodes{% endblocktranslate %}{% elif media.item.media_type|long_unit %} {% with progress_unit=media.item.media_type|long_unit|lower %}{% if media.max_progress == 1 %}{% translate progress_unit context "progress unit" %}{% else %}{% with progress_unit_plural=progress_unit|add:"s" %}{% translate progress_unit_plural context "progress unit" %}{% endwith %}{% endif %}{% endwith %}{% endif %}"
                            {% endif %}
                          {% endif %}
                        {% endwith %}
                      {% elif resolved_media_type == MediaTypes.MOVIE.value and aggregated_progress %}
-                       data-progress-text="{% blocktranslate count count=aggregated_progress %}{{ count }} play{% plural %}{{ count }} plays{% endblocktranslate %}"
+                       data-progress-text="{% blocktranslate count count=aggregated_progress|safe_count %}{{ count }} play{% plural %}{{ count }} plays{% endblocktranslate %}"
                      {% elif resolved_media_type == MediaTypes.MOVIE.value and media.progress %}
-                       data-progress-text="{% blocktranslate count count=media.progress %}{{ count }} play{% plural %}{{ count }} plays{% endblocktranslate %}"
+                       data-progress-text="{% blocktranslate count count=media.progress|safe_count %}{{ count }} play{% plural %}{{ count }} plays{% endblocktranslate %}"
                      {% elif resolved_media_type == MediaTypes.MOVIE.value and media|safe_attr:"repeats" and media.status != Status.PLANNING.value %}
-                       data-progress-text="{% blocktranslate count count=media.repeats %}{{ count }} play{% plural %}{{ count }} plays{% endblocktranslate %}"
+                       data-progress-text="{% blocktranslate count count=media.repeats|safe_count %}{{ count }} play{% plural %}{{ count }} plays{% endblocktranslate %}"
                      {% elif aggregated_progress %}
                        data-progress-text="{{ media.formatted_aggregated_progress }}"
                      {% elif media.progress %}

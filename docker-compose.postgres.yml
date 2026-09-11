@@ -21,15 +21,6 @@ services:
       - DB_PASSWORD=yamtrack
       - DB_PORT=5432
       - ADMIN_ENABLED=False
-      # Optional Kodi JSON-RPC integration. Values come from the host/Compose
-      # environment; blank KODI_HOST leaves Kodi Control + Sync disabled.
-      - KODI_HOST=${KODI_HOST:-}
-      - KODI_PORT=${KODI_PORT:-8080}
-      - KODI_USERNAME=${KODI_USERNAME:-}
-      - KODI_PASSWORD=${KODI_PASSWORD:-}
-      - KODI_SCHEME=${KODI_SCHEME:-http}
-      - KODI_TIMEOUT=${KODI_TIMEOUT:-6}
-      - KODI_FLOPPY_USER_ID=${KODI_FLOPPY_USER_ID:-}
       # Off by default: otherwise a publicly known demo/demodemo
       # account is provisioned after migrations.
       - DEMO_ACCOUNT_ENABLED=False

@@ -1836,6 +1836,7 @@ def media_details(
         "user": request.user,
         "media": media_metadata,
         "media_type": media_type,
+        "match_item": detail_item,
         "authors_linked": authors_linked,
         "author_detail_keys": author_detail_keys,
         "studios_linked": studios_linked,

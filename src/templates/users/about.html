@@ -1,7 +1,6 @@
 {% extends "users/base.html" %}
 {% load i18n %}
 
-
 {% load socialaccount %}
 {% load static %}
 
@@ -85,6 +84,20 @@
                x-data="{
                  canInstall: false,
                  status: '',
+                 // Server-rendered as 'all' so a browser without JavaScript
+                 // keeps every platform's steps. Narrowed on init.
+                 platform: 'all',
+                 detectPlatform() {
+                   const ua = navigator.userAgent || '';
+                   if (/Android/i.test(ua)) return 'android';
+                   const iosDevice = /iPad|iPhone|iPod/.test(ua);
+                   // iPadOS 13+ reports a Mac user agent; touch points betray it.
+                   const iPadDesktopUA = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1;
+                   return iosDevice || iPadDesktopUA ? 'ios' : 'desktop';
+                 },
+                 shows(name) {
+                   return this.platform === 'all' || this.platform === name;
+                 },
                  sync() {
                    const pwa = window.floppyPwa;
                    this.canInstall = !!(pwa && pwa.deferredPrompt) && !pwa.isStandalone();
@@ -110,7 +123,7 @@
                    }
                  }
                }"
-               x-init="sync()"
+               x-init="platform = detectPlatform(); sync()"
                @floppy:install-availability.window="sync()">
         <div class="flex items-center gap-2 text-lg font-medium text-[var(--color-text-secondary)]">
           {% include "app/icons/download.svg" with classes="w-5 h-5 text-[var(--color-link)]" %}
@@ -136,8 +149,9 @@
              class="text-sm text-[var(--color-text-muted)]"
              x-text="status"></p>
 
-          <div class="grid gap-4 sm:grid-cols-2">
-            <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-strong)] p-4 space-y-2">
+          <div class="grid gap-4" :class="platform === 'all' ? 'sm:grid-cols-2' : ''">
+            <div x-show="shows('ios')"
+                 class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-strong)] p-4 space-y-2">
               <h4 class="text-sm font-semibold text-[var(--color-text)]">{% translate "iOS and iPadOS" %}</h4>
               <ol class="list-decimal pl-4 space-y-1 text-sm text-[var(--color-text-muted)] leading-relaxed">
                 <li>{% translate "Open this instance in Safari." %}</li>
@@ -149,7 +163,8 @@
               </ol>
             </div>
 
-            <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-strong)] p-4 space-y-2">
+            <div x-show="shows('android')"
+                 class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-strong)] p-4 space-y-2">
               <h4 class="text-sm font-semibold text-[var(--color-text)]">{% translate "Android" %}</h4>
               <ol class="list-decimal pl-4 space-y-1 text-sm text-[var(--color-text-muted)] leading-relaxed">
                 <li>{% translate "Open this instance in Chrome." %}</li>
@@ -159,6 +174,20 @@
               </ol>
             </div>
           </div>
+
+          <p x-show="platform === 'desktop'"
+             style="display: none;"
+             class="text-[var(--color-text-muted)] text-sm leading-relaxed">
+            Installing on a phone instead? The
+            <a href="https://github.com/dannyvfilms/Floppy/wiki/2.-User-Guide#installing-floppy-on-your-phone"
+               target="_blank"
+               rel="noopener noreferrer"
+               class="text-[var(--color-link)] hover:text-[var(--color-link-hover)] underline">
+              installation guide
+              <span class="sr-only">(opens in a new tab)</span>
+            </a>
+            has the iOS and Android steps.
+          </p>
 
           <p class="text-[var(--color-text-muted)] text-sm leading-relaxed">
             {% translate "No install control anywhere? Serve the instance over HTTPS and open it in a full browser rather than an in-app one. Tracking still needs a connection to your Floppy server." %}
@@ -181,7 +210,8 @@
         </div>
 
         <div class="pl-7">
-          <div class="overflow-x-auto rounded-lg border border-[var(--color-border)]">
+          {# relative: contains the absolutely positioned sr-only spans, which would otherwise escape this scroller and widen the page #}
+<div class="relative overflow-x-auto rounded-lg border border-[var(--color-border)]">
             <table class="w-full text-left text-sm text-[var(--color-text-secondary)]">
               <thead class="bg-[var(--color-surface-strong)] text-xs uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border)]">
                 <tr>
@@ -294,7 +324,8 @@
         </div>
 
         <div class="pl-7">
-          <div class="overflow-x-auto rounded-lg border border-[var(--color-border)]">
+          {# relative: contains the absolutely positioned sr-only spans, which would otherwise escape this scroller and widen the page #}
+<div class="relative overflow-x-auto rounded-lg border border-[var(--color-border)]">
             <table class="w-full text-left text-sm text-[var(--color-text-secondary)]">
               <thead class="bg-[var(--color-surface-strong)] text-xs uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border)]">
                 <tr>
@@ -448,7 +479,8 @@
           <h3 id="about-attribution-heading">{% translate "Metadata & Attributions" %}</h3>
         </div>
         <div class="pl-7">
-          <div class="overflow-x-auto rounded-lg border border-[var(--color-border)]">
+          {# relative: contains the absolutely positioned sr-only spans, which would otherwise escape this scroller and widen the page #}
+<div class="relative overflow-x-auto rounded-lg border border-[var(--color-border)]">
             <table class="w-full text-left text-sm text-[var(--color-text-secondary)]">
               <thead class="bg-[var(--color-surface-strong)] text-xs uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border)]">
                 <tr>
@@ -547,7 +579,8 @@
           <h3 id="about-license-heading">{% translate "License & Legal" %}</h3>
         </div>
         <div class="pl-7">
-          <div class="overflow-x-auto rounded-lg border border-[var(--color-border)]">
+          {# relative: contains the absolutely positioned sr-only spans, which would otherwise escape this scroller and widen the page #}
+<div class="relative overflow-x-auto rounded-lg border border-[var(--color-border)]">
             <table class="w-full text-left text-sm text-[var(--color-text-secondary)]">
               <thead class="bg-[var(--color-surface-strong)] text-xs uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border)]">
                 <tr>

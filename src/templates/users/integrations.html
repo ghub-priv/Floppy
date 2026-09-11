@@ -13,6 +13,44 @@
   <div class="space-y-6"
        x-data="{ activeIntegration: 'all' }"
        x-init="const deepLinkTag = new URLSearchParams(window.location.search).get('open'); if (deepLinkTag) { activeIntegration = deepLinkTag; }">
+    {% if match_review_references %}
+      <section class="rounded-lg border border-amber-500/40 bg-amber-500/10 p-5">
+        <h2 class="text-lg font-semibold">{% translate "Matching review" %}</h2>
+        <p class="mt-1 text-sm text-[var(--color-text-secondary)]">{% translate "These provider identities were not safe to match automatically." %}</p>
+        <div class="mt-4 space-y-2">
+          {% for reference in match_review_references %}
+            <div class="flex flex-wrap items-center justify-between gap-3 rounded-md bg-[var(--color-surface)] p-3 text-sm">
+              <span>{{ reference.metadata.title|default:reference.external_identity }} ({{ reference.integration }})</span>
+              <span class="flex gap-2">
+                {% if reference.matched_item %}<a class="text-[var(--color-link)] hover:underline" href="{% url 'match_fix' reference.matched_item.id %}">{% translate "Fix match" %}</a>{% endif %}
+                <form method="post" action="{% url 'match_reference_status' reference.id 'ignored' %}">{% csrf_token %}<button class="text-[var(--color-text-muted)] hover:text-[var(--color-text)]" type="submit">{% translate "Ignore" %}</button></form>
+              </span>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+    {% if match_saved_references %}
+      <section class="rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-surface)] p-5">
+        <h2 class="text-lg font-semibold">{% translate "Saved match decisions" %}</h2>
+        <p class="mt-1 text-sm text-[var(--color-text-secondary)]">{% translate "These decisions are applied to future Plex and Trakt imports." %}</p>
+        <div class="mt-4 space-y-2">
+          {% for reference in match_saved_references %}
+            <div class="flex flex-wrap items-center justify-between gap-3 rounded-md bg-[var(--color-surface-strong)] p-3 text-sm">
+              <span>{{ reference.metadata.title|default:reference.external_identity }} ({{ reference.integration }})</span>
+              <span class="flex items-center gap-3">
+                <span class="text-[var(--color-text-muted)]">{{ reference.get_review_status_display }}</span>
+                {% with ref_item=reference.corrected_item|default:reference.matched_item %}
+                  {% if ref_item %}<a class="text-[var(--color-link)] hover:underline" href="{% url 'match_fix' ref_item.id %}">{% translate "Edit" %}</a>{% endif %}
+                {% endwith %}
+                <form method="post" action="{% url 'match_reference_status' reference.id 'remove' %}">{% csrf_token %}<button class="text-[var(--color-text-muted)] hover:text-[var(--color-text)]" type="submit">{% translate "Remove" %}</button></form>
+              </span>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+{% include "users/components/sync_state_section.html" %}
     {% if request.GET.onboarding %}
       {# Guided setup banner: shown when the user arrived here from the setup wizard #}
       <div class="bg-indigo-500/10 border border-indigo-500/30 rounded-lg p-4 flex items-center justify-between gap-4 flex-wrap">
@@ -41,7 +79,9 @@
         {% include "app/icons/padlock.svg" with classes="w-5 h-5 text-[var(--color-link)] mr-2" %}
         <h3 class="text-base font-medium">{% translate "API Token" %}</h3>
       </div>
-      <p class="text-[var(--color-text-muted)] mb-4 text-sm">{% translate "This token is used to authenticate webhook requests from your media servers." %}</p>
+      <p class="text-[var(--color-text-muted)] mb-4 text-sm">
+        {% translate "This token authenticates webhook requests from your media servers. It has full access to your account, so for apps and API clients create an app token below instead — those can be limited and revoked one at a time." %}
+      </p>
       <div class="bg-[var(--color-surface-dim)] p-3 rounded-md mb-4">
         <div class="flex items-center gap-2">
           <input readonly=""
@@ -73,6 +113,8 @@
         </div>
       </div>
     </div>
+
+    {% include "users/components/integration_tokens.html" %}
 
     {# Filter bar #}
     <div class="bg-[var(--color-surface-strong)] rounded-lg p-4 mb-5">
@@ -126,6 +168,13 @@
                 class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
                 :class="activeIntegration === 'seerr' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
           {% translate "Seerr" %}
+        </button>
+        <button type="button"
+                @click="activeIntegration = 'nuvio'"
+                :aria-pressed="activeIntegration === 'nuvio'"
+                class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
+                :class="activeIntegration === 'nuvio' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
+          {% translate "Nuvio" %}
         </button>
       </div>
     </div>
@@ -333,11 +382,11 @@
           <div class="flex items-center gap-2 text-sm text-[var(--color-text-muted)]">
             <span>{{ jellyfin_account.base_url }}</span>
             {% if jellyfin_account.jellyfin_username %}
-              <span>&bull;</span>
+              <span>•</span>
               <span>{{ jellyfin_account.jellyfin_username }}</span>
             {% endif %}
             {% if jellyfin_account.last_sync_at %}
-              <span>&bull;</span>
+              <span>•</span>
               <span>{% blocktranslate with value1=jellyfin_account.last_sync_at|user_datetime_format:user %}Last sync: {{ value1 }}{% endblocktranslate %}</span>
             {% endif %}
           </div>
@@ -1059,8 +1108,9 @@
             {# djlint:on #}
           </li>
           <li>{% translate "Leave the username and password fields blank." %}</li>
-          <li>{% translate "Enable the following events:" %} <strong>{% translate "Start" %}</strong>, <strong>{% translate "Stopped" %}</strong>{% translate ", and" %} <strong>{% translate "Finished" %}</strong>.</li>
-          <li>{% translate "An item is marked watched when playback reaches 80% or Kodi reports a" %} <em>{% translate "Finished" %}</em> {% translate "event." %}</li>
+          <li>{% translate "In the add-on's \"Scrobble at specific events\" settings, make sure" %} <strong>{% translate "Start playback" %}</strong>, <strong>{% translate "Playback stopped (not finished)" %}</strong>{% translate ", and" %} <strong>{% translate "Playback finished (not stopped before reaching the end)" %}</strong> {% translate "are all enabled (they're on by default)." %}</li>
+          <li>{% translate "If you use the add-on's" %} <strong>{% translate "Skip all events after sending stop/end" %}</strong> {% translate "option, turn it off — it can suppress the events Floppy needs to mark an episode watched." %}</li>
+          <li>{% translate "An item is marked watched when playback reaches 80% or Kodi reports" %} <em>{% translate "Playback finished" %}</em>.</li>
         </ol>
       </div>
     </div>
@@ -1078,7 +1128,8 @@
       </p>
       <div class="bg-[var(--color-surface-dim)] p-4 rounded-md">
         <h4 class="text-sm font-medium mb-3">{% translate "Setup Instructions" %}</h4>
-        {% url 'stremio_addon_manifest' request.user.token as stremio_addon_path %}
+        {% if catalog_grants %}{% firstof catalog_grants.0.token request.user.token as stremio_addon_credential %}{% else %}{% firstof request.user.token as stremio_addon_credential %}{% endif %}
+        {% url 'stremio_addon_manifest' stremio_addon_credential as stremio_addon_path %}
         {% absolute_app_url stremio_addon_path as stremio_addon_url %}
         <ol class="list-decimal list-inside space-y-2 text-sm text-[var(--color-text-secondary)]">
           <li>
@@ -1092,10 +1143,14 @@
             </div>
             {# djlint:on #}
           </li>
+          <li>
+            {% translate "Optional:" %} <a href="{% url 'stremio_addon_configure' request.user.token %}" class="text-[var(--color-link)] hover:underline" target="_blank" rel="noopener">{% translate "choose which catalogs" %}</a> {% translate "the addon publishes, then use the URL it gives you in place of the one above." %}
+          </li>
           <li>{% translate "In Stremio, open" %} <strong>{% translate "Addons" %}</strong>{% translate ", paste the URL into the search box at the top, and click" %} <strong>{% translate "Install" %}</strong>.</li>
           <li>{% translate "Floppy must be reachable from your Stremio device over" %} <strong>HTTPS</strong> {% translate "(plain HTTP only works for localhost)." %}</li>
           <li>{% translate "Playback start marks the item in progress; the recurring library import marks items watched." %}</li>
         </ol>
+        {% include "users/components/catalog_grants.html" %}
       </div>
       {% if stremio_catalog_readiness %}
         <div class="mt-4">
@@ -1395,6 +1450,40 @@
           </ol>
         </div>
       {% endif %}
+    </div>
+
+    {# Nuvio #}
+    <div class="bg-[var(--color-surface-strong)] p-5 rounded-lg mb-6"
+         x-show="activeIntegration === 'all' || activeIntegration === 'nuvio'"
+         x-transition.opacity.duration.150ms>
+      <div class="flex items-center mb-3">
+        {% include "app/icons/server.svg" with classes="w-5 h-5 text-[var(--color-link)] mr-2" %}
+        <h3 class="text-base font-medium">{% translate "Nuvio Integration" %}</h3>
+      </div>
+      <p class="text-[var(--color-text-muted)] mb-4 text-sm">
+        {% translate "Connect Nuvio TV or Nuvio Mobile for two-way scrobbling, resume progress, and watched-state sync. Nuvio talks to Floppy's API directly, so there's no webhook to configure." %}
+      </p>
+      <div class="bg-[var(--color-surface-dim)] p-4 rounded-md">
+        <h4 class="text-sm font-medium mb-3">{% translate "Setup Instructions" %}</h4>
+        <ol class="list-decimal list-inside space-y-2 text-sm text-[var(--color-text-secondary)]">
+          <li>
+            {% translate "Create an" %} <a href="#app-tokens" class="text-[var(--color-link)] hover:underline">{% translate "app token" %}</a> {% translate "above, named after the device. The default permissions already cover everything Nuvio needs." %}
+          </li>
+          <li>{% translate "Copy the token secret when it's shown — Floppy only displays it once." %}</li>
+          <li>
+            {% translate "In Nuvio, enter this Server URL and the token secret you copied:" %}
+            {# djlint:off #}
+            <div class="mt-2 inline-flex items-center gap-2 w-[calc(100%-30px)]">
+              <input readonly id="nuvio-server-url" class="w-full bg-[var(--color-surface-dim)] rounded-md text-[var(--color-text-muted)] text-sm border-0 focus:ring-0 outline-none font-mono" type="text" value="{% absolute_app_url '/' %}">
+              <span class="flex items-center cursor-pointer group" title="{% translate "Copy" %}" data-copy-target="#nuvio-server-url">
+                {% include "app/icons/copy.svg" with classes="w-5 h-5 text-[var(--color-text-muted)] group-hover:text-[var(--color-link)] transition-colors" %}
+              </span>
+            </div>
+            {# djlint:on #}
+          </li>
+          <li>{% translate "Revoke the token in" %} <a href="#app-tokens" class="text-[var(--color-link)] hover:underline">{% translate "App tokens" %}</a> {% translate "above to disconnect the device. This never deletes your tracking data." %}</li>
+        </ol>
+      </div>
     </div>
 
   </div>

@@ -1553,3 +1553,122 @@ class SmartRuleGranularMediaTypesTest(TestCase):
             self.episode_item.id,
             smart_rules.collect_matching_item_ids(self.user, unrated),
         )
+
+
+class SmartRuleRelativeDateWindowTest(TestCase):
+    """"In the last N units" stays relative and resolves at evaluation time."""
+
+    def setUp(self):
+        """Create a user with movies completed at known dates."""
+        self.user = get_user_model().objects.create_user(
+            username="relative",
+            password="12345",
+        )
+        self.today = timezone.localdate()
+        self.recent_item = Item.objects.create(
+            title="Recent Movie",
+            media_id="rel-1",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.MANUAL.value,
+            image="https://example.com/recent.jpg",
+        )
+        Movie.objects.create(
+            item=self.recent_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            end_date=timezone.now() - timedelta(days=3),
+        )
+        self.old_item = Item.objects.create(
+            title="Old Movie",
+            media_id="rel-2",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.MANUAL.value,
+            image="https://example.com/old.jpg",
+        )
+        Movie.objects.create(
+            item=self.old_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            end_date=timezone.now() - timedelta(days=200),
+        )
+
+    def _rules(self, **extra):
+        return smart_rules.normalize_rule_payload(
+            {"media_types": [MediaTypes.MOVIE.value], **extra},
+            self.user,
+        )
+
+    def test_window_is_stored_relative_not_snapshotted(self):
+        """The saved rule keeps the amount and unit, not resolved dates."""
+        rules = self._rules(
+            completed_date_within="7",
+            completed_date_within_unit="days",
+        )
+
+        self.assertEqual(rules["completed_date_within"], "7")
+        self.assertEqual(rules["completed_date_within_unit"], "days")
+        self.assertEqual(rules["completed_date_from"], "")
+        self.assertEqual(rules["completed_date_to"], "")
+
+    def test_window_matches_only_items_inside_it(self):
+        """A 7-day window keeps the recent item and drops the old one."""
+        matched = smart_rules.collect_matching_item_ids(
+            self.user,
+            self._rules(completed_date_within="7", completed_date_within_unit="days"),
+        )
+
+        self.assertIn(self.recent_item.id, matched)
+        self.assertNotIn(self.old_item.id, matched)
+
+    def test_wider_window_picks_up_the_older_item(self):
+        """A one-year window covers both."""
+        matched = smart_rules.collect_matching_item_ids(
+            self.user,
+            self._rules(completed_date_within="1", completed_date_within_unit="years"),
+        )
+
+        self.assertIn(self.recent_item.id, matched)
+        self.assertIn(self.old_item.id, matched)
+
+    def test_window_moves_with_the_clock(self):
+        """The same stored rule resolves to a different range on a later day."""
+        rules = self._rules(
+            completed_date_within="7",
+            completed_date_within_unit="days",
+        )
+
+        early = smart_rules.resolve_relative_date_windows(
+            rules,
+            datetime.date(2026, 1, 10),
+        )
+        later = smart_rules.resolve_relative_date_windows(
+            rules,
+            datetime.date(2026, 6, 10),
+        )
+
+        self.assertEqual(early["completed_date_from"], "2026-01-03")
+        self.assertEqual(later["completed_date_from"], "2026-06-03")
+
+    def test_window_clears_a_conflicting_absolute_range(self):
+        """A payload carrying both keeps only the relative window."""
+        rules = self._rules(
+            completed_date_within="30",
+            completed_date_within_unit="days",
+            completed_date_from="2020-01-01",
+            completed_date_to="2020-12-31",
+        )
+
+        self.assertEqual(rules["completed_date_from"], "")
+        self.assertEqual(rules["completed_date_to"], "")
+
+    def test_invalid_windows_are_dropped(self):
+        """Junk amounts and units fall back to no window / days."""
+        for bad in ("", "0", "-3", "abc", "1000"):
+            rules = self._rules(completed_date_within=bad)
+            self.assertEqual(rules["completed_date_within"], "", bad)
+
+        rules = self._rules(
+            completed_date_within="5",
+            completed_date_within_unit="fortnights",
+        )
+        self.assertEqual(rules["completed_date_within_unit"], "days")

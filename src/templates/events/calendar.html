@@ -4,6 +4,7 @@
 {% load static %}
 {% load user_tags %}
 {% load app_tags %}
+{% load events_tags %}
 
 {% block title %}
   {% translate "Calendar - Floppy" %}
@@ -86,11 +87,12 @@
               </div>
               <div class="max-h-64 overflow-y-auto">
                 <template x-for="type in availableMediaTypes" :key="type.value">
-                  <div class="flex items-center w-full text-sm text-[var(--color-text-secondary)]">
+                  <div class="flex items-center w-full text-sm text-[var(--color-text-secondary)]"
+                       :class="{ 'opacity-50': !type.inMonth }">
                     <button type="button"
                             class="flex items-center flex-1 min-w-0 px-4 py-2 text-left transition-colors cursor-pointer hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
                             @click="toggleMediaType(type.value)">
-                      <span x-text="type.label"></span>
+                      <span x-text="mediaTypeLabel(type)"></span>
                       <span class="ml-auto" x-show="isTypeSelected(type.value)">
                         {% include "app/icons/checkmark.svg" with classes="w-4 h-4 text-green-400" %}
                       </span>
@@ -103,6 +105,12 @@
                             :aria-label="`Filter ${type.label} by status`">
                       {% include "app/icons/chevron-right.svg" with classes="w-3.5 h-3.5" %}
                     </button>
+                    <span class="shrink-0 p-2 mr-2 inline-flex items-center justify-center invisible pointer-events-none"
+                          x-show="!hasStatusOptions(type.value)"
+                          x-cloak
+                          aria-hidden="true">
+                      {% include "app/icons/chevron-right.svg" with classes="w-3.5 h-3.5" %}
+                    </span>
                   </div>
                 </template>
               </div>
@@ -126,6 +134,7 @@
                 <template x-for="status in (availableStatusesByType[statusSubmenuType] || [])" :key="status.value">
                   <button type="button"
                           class="flex items-center w-full px-4 py-2 text-left text-sm transition-colors cursor-pointer text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
+                          :class="{ 'opacity-50': !status.inMonth }"
                           @click="toggleStatus(statusSubmenuType, status.value)">
                     <span x-text="status.label"></span>
                     <span class="ml-auto" x-show="isStatusSelected(statusSubmenuType, status.value)">
@@ -311,27 +320,38 @@
         dropdownOpen: false,
         statusSubmenuType: null,
         actionsOpen: false,
+        storageKey: 'yamtrack.calendar.filters.{{ user.id }}',
         availableMediaTypes: [
-          {% for media_type in available_media_types %}
-            { value: '{{ media_type }}', label: '{{ media_type|media_type_readable|escapejs }}' }{% if not forloop.last %},{% endif %}
+          {% for media_type in filter_media_types %}
+            {
+              value: '{{ media_type }}',
+              label: '{{ media_type|media_type_readable|escapejs }}',
+              inMonth: {% if media_type in available_media_types %}true{% else %}false{% endif %},
+            }{% if not forloop.last %},{% endif %}
           {% endfor %}
         ],
         selectedMediaTypes: [
-          {% for media_type in available_media_types %}
+          {% for media_type in filter_media_types %}
             '{{ media_type }}'{% if not forloop.last %},{% endif %}
           {% endfor %}
         ],
         availableStatusesByType: {
-          {% for media_type, statuses in available_statuses_by_type.items %}
+          {% for media_type, statuses in filter_statuses_by_type.items %}
             '{{ media_type }}': [
               {% for status in statuses %}
-                { value: '{{ status }}', label: '{{ status|media_status_readable|escapejs }}' }{% if not forloop.last %},{% endif %}
+                {% with month_statuses=available_statuses_by_type|get_item:media_type %}
+                {
+                  value: '{{ status }}',
+                  label: '{{ status|media_status_readable|escapejs }}',
+                  inMonth: {% if month_statuses and status in month_statuses %}true{% else %}false{% endif %},
+                }{% if not forloop.last %},{% endif %}
+                {% endwith %}
               {% endfor %}
             ]{% if not forloop.last %},{% endif %}
           {% endfor %}
         },
         selectedStatusesByType: {
-          {% for media_type, statuses in available_statuses_by_type.items %}
+          {% for media_type, statuses in filter_statuses_by_type.items %}
             '{{ media_type }}': [
               {% for status in statuses %}
                 '{{ status }}'{% if not forloop.last %},{% endif %}
@@ -343,14 +363,83 @@
         filteredGridHtml: '',
         filteredListHtml: '',
         init() {
-          this.$watch('selectedMediaTypes', () => this.applyFilter());
-          this.$watch('selectedStatusesByType', () => this.applyFilter());
+          this.loadSavedFilters();
+          this.$watch('selectedMediaTypes', () => {
+            this.applyFilter();
+            this.persistFilters();
+          });
+          this.$watch('selectedStatusesByType', () => {
+            this.applyFilter();
+            this.persistFilters();
+          }, { deep: true });
           this.applyFilter();
+        },
+        loadSavedFilters() {
+          try {
+            const raw = window.localStorage.getItem(this.storageKey);
+            if (!raw) {
+              return;
+            }
+
+            const saved = JSON.parse(raw);
+            const validTypes = new Set(this.availableMediaTypes.map(type => type.value));
+
+            if (Array.isArray(saved.selectedMediaTypes)) {
+              this.selectedMediaTypes = saved.selectedMediaTypes.filter(
+                mediaType => validTypes.has(mediaType),
+              );
+            }
+
+            if (
+              saved.selectedStatusesByType
+              && typeof saved.selectedStatusesByType === 'object'
+            ) {
+              const mergedStatusesByType = {};
+
+              this.availableMediaTypes.forEach((type) => {
+                const availableStatuses = (
+                  this.availableStatusesByType[type.value] || []
+                ).map(status => status.value);
+                const savedStatuses = saved.selectedStatusesByType[type.value];
+
+                if (Array.isArray(savedStatuses)) {
+                  mergedStatusesByType[type.value] = savedStatuses.filter(
+                    status => availableStatuses.includes(status),
+                  );
+                } else {
+                  mergedStatusesByType[type.value] = availableStatuses;
+                }
+              });
+
+              this.selectedStatusesByType = mergedStatusesByType;
+            }
+          } catch (error) {
+            // Ignore storage failures (private mode or disabled storage).
+          }
+        },
+        persistFilters() {
+          try {
+            window.localStorage.setItem(this.storageKey, JSON.stringify({
+              selectedMediaTypes: this.selectedMediaTypes,
+              selectedStatusesByType: this.selectedStatusesByType,
+            }));
+          } catch (error) {
+            // Ignore storage failures (private mode or disabled storage).
+          }
+        },
+        hasPartialStatusFilter(mediaType) {
+          return (
+            this.hasStatusOptions(mediaType)
+            && !this.allStatusesSelectedForType(mediaType)
+          );
+        },
+        mediaTypeLabel(type) {
+          const statusMarker = this.hasPartialStatusFilter(type.value) ? ' ·' : '';
+          return `${type.label}${statusMarker}`;
         },
         dropdownLabel() {
           const statusFiltered = this.selectedMediaTypes.some(
-            mediaType => this.hasStatusOptions(mediaType)
-              && !this.allStatusesSelectedForType(mediaType),
+            mediaType => this.hasPartialStatusFilter(mediaType),
           );
           const statusMarker = statusFiltered ? ' ·' : '';
           if (this.allTypesSelected()) {

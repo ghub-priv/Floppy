@@ -22,13 +22,13 @@
 
           {% if edit_modal_url and entry.instance_id %}
             <button title="{% translate "Edit" %}"
-                    class="inline-flex items-center justify-center rounded-md h-8 w-8 text-gray-400 hover:text-[var(--color-text)] hover:bg-[var(--color-surface-muted)] opacity-0 group-hover:opacity-100 transition-opacity duration-200 focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] cursor-pointer"
+                    class="inline-flex items-center justify-center rounded-md h-8 w-8 text-gray-400 hover:text-[var(--color-text)] hover:bg-[var(--color-surface-muted)] opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 focus-visible:opacity-100 transition-opacity duration-200 focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] cursor-pointer"
                     hx-get="{{ edit_modal_url }}?instance_id={{ entry.instance_id }}{% if episode_number %}&episode_number={{ episode_number }}{% endif %}&return_url={{ return_url|urlencode }}"
                     hx-target="closest [data-history-modal-root]"
                     hx-swap="outerHTML">{% include "app/icons/edit.svg" with classes="w-4 h-4" %}</button>
           {% endif %}
           <button title="{% translate "Delete" %}"
-                  class="inline-flex items-center justify-center rounded-md h-8 w-8 text-gray-400 hover:text-red-400 hover:bg-red-400/10 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 cursor-pointer"
+                  class="inline-flex items-center justify-center rounded-md h-8 w-8 text-gray-400 hover:text-red-400 hover:bg-red-400/10 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 focus-visible:opacity-100 transition-opacity duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 cursor-pointer"
                   hx-delete="{% url 'delete_history_record' media_type entry.id %}"
                   hx-confirm="Delete this activity entry? This cannot be undone."
                   hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'

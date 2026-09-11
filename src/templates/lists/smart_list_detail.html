@@ -51,6 +51,12 @@
     date_added_to: '{{ active_smart_rules.date_added_to|default:''|escapejs }}',
     completed_date_from: '{{ active_smart_rules.completed_date_from|default:''|escapejs }}',
     completed_date_to: '{{ active_smart_rules.completed_date_to|default:''|escapejs }}',
+    completed_date_within: '{{ active_smart_rules.completed_date_within|default:''|escapejs }}',
+    completed_date_within_unit: '{{ active_smart_rules.completed_date_within_unit|default:'days'|escapejs }}',
+    release_date_within: '{{ active_smart_rules.release_date_within|default:''|escapejs }}',
+    release_date_within_unit: '{{ active_smart_rules.release_date_within_unit|default:'days'|escapejs }}',
+    date_added_within: '{{ active_smart_rules.date_added_within|default:''|escapejs }}',
+    date_added_within_unit: '{{ active_smart_rules.date_added_within_unit|default:'days'|escapejs }}',
     author: '{{ active_smart_rules.author|default:''|escapejs }}',
     source: '{{ active_smart_rules.source|default:''|escapejs }}',
     language: '{{ active_smart_rules.language|default:''|escapejs }}',
@@ -207,21 +213,6 @@
       }
       return gettext('Pick a year…');
     },
-    dateMenuLabel() {
-      if (this.year) {
-        return this.year === 'unknown' ? gettext('Unknown') : this.year;
-      }
-      if (this.completed_date_from || this.completed_date_to) {
-        return gettext('Completed');
-      }
-      if (this.release_date_from || this.release_date_to) {
-        return gettext('Release Date');
-      }
-      if (this.date_added_from || this.date_added_to) {
-        return gettext('Date Added');
-      }
-      return gettext('Any');
-    },
     dropdownLabel() {
       if (this.allTypesSelected() && !this.hasGranularTypeSelected()) {
         return '{{ media_i18n_16|escapejs }}';
@@ -301,15 +292,15 @@
       if (this.release && this.release !== 'all') {
         labels.push(this.releaseLabels[this.release] || '{{ media_i18n_10|escapejs }}');
       }
-      const releaseDateLabel = this.formatDateRangeLabel('{{ media_i18n_84|escapejs }}', this.release_date_from, this.release_date_to);
+      const releaseDateLabel = relativeWindowLabel(this.release_date_within, this.release_date_within_unit) || this.formatDateRangeLabel('{{ media_i18n_84|escapejs }}', this.release_date_from, this.release_date_to);
       if (releaseDateLabel) {
         labels.push(releaseDateLabel);
       }
-      const dateAddedLabel = this.formatDateRangeLabel('{{ media_i18n_85|escapejs }}', this.date_added_from, this.date_added_to);
+      const dateAddedLabel = relativeWindowLabel(this.date_added_within, this.date_added_within_unit) || this.formatDateRangeLabel('{{ media_i18n_85|escapejs }}', this.date_added_from, this.date_added_to);
       if (dateAddedLabel) {
         labels.push(dateAddedLabel);
       }
-      const completedDateLabel = this.formatDateRangeLabel(gettext('Completed'), this.completed_date_from, this.completed_date_to);
+      const completedDateLabel = relativeWindowLabel(this.completed_date_within, this.completed_date_within_unit) || this.formatDateRangeLabel(gettext('Completed'), this.completed_date_from, this.completed_date_to);
       if (completedDateLabel) {
         labels.push(completedDateLabel);
       }
@@ -367,6 +358,9 @@
       this.date_added_to = '';
       this.completed_date_from = '';
       this.completed_date_to = '';
+      this.completed_date_within = '';
+      this.release_date_within = '';
+      this.date_added_within = '';
       this.author = '';
       this.source = '';
       this.language = '';
@@ -445,7 +439,8 @@
       if (isOrderEditing) initListSortable(layout);
     });
     $watch('isOrderEditing', v => v ? initListSortable(layout) : destroyListSortable());
-  ">
+  "
+  @list-count-updated.camel.window="itemsCount = Number($event.detail.count)">
 
     <div class="mb-6">
       <div class="w-full min-w-0">
@@ -454,7 +449,7 @@
         </div>
         <div class="mb-3 text-sm font-medium text-[var(--color-text-muted)]">
           <div class="flex flex-wrap items-center gap-y-1">
-            <span x-text="itemsCountLabel()">{% blocktranslate trimmed with value_1=items_count count count=items_count %}{{ value_1 }} item{% plural %}{{ value_1 }} items{% endblocktranslate %}</span>
+            <span data-list-item-count x-text="itemsCountLabel()">{% blocktranslate trimmed with value_1=items_count count count=items_count %}{{ value_1 }} item{% plural %}{{ value_1 }} items{% endblocktranslate %}</span>
             {% if is_public_view %}
               <span class="mx-2 text-gray-600">•</span>
               <a href="{% url 'user_profile' custom_list.owner.username %}"
@@ -796,7 +791,10 @@
       'rating', 'rating_min', 'rating_max', 'collection', 'genre', 'implied_genre',
       'year', 'release', 'release_date_from', 'release_date_to',
       'date_added_from', 'date_added_to', 'completed_date_from',
-      'completed_date_to', 'source', 'language', 'country',
+      'completed_date_to', 'completed_date_within', 'completed_date_within_unit',
+      'release_date_within', 'release_date_within_unit',
+      'date_added_within', 'date_added_within_unit',
+      'source', 'language', 'country',
       'platform', 'origin', 'format', 'provider', 'author',
     ];
 

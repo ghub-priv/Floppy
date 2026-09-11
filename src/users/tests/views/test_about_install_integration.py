@@ -17,6 +17,15 @@ FAKE_INSTALL_EVENT = """
 }
 """
 
+IOS_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+)
+ANDROID_UA = (
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Mobile Safari/537.36"
+)
+
 FAILING_INSTALL_EVENT = """
 () => {
   const event = new Event('beforeinstallprompt');
@@ -72,8 +81,8 @@ class AboutInstallSectionTests(StaticLiveServerTestCase):
 
         expect(page.get_by_role("heading", name="Install Floppy")).to_be_visible()
         expect(page.get_by_text("Floppy is an installable PWA.")).to_be_visible()
-        expect(page.get_by_role("heading", name="iOS and iPadOS")).to_be_visible()
-        expect(page.get_by_role("heading", name="Android")).to_be_visible()
+        # Desktop keeps a route to the phone steps without printing both.
+        expect(page.get_by_text("Installing on a phone instead?")).to_be_visible()
         # No event means no button, and no claim that install is impossible.
         expect(self.install_button(page)).to_be_hidden()
 
@@ -117,7 +126,7 @@ class AboutInstallSectionTests(StaticLiveServerTestCase):
 
         expect(page.get_by_text("Installation dismissed.")).to_be_visible()
         expect(self.install_button(page)).to_be_hidden()
-        expect(page.get_by_role("heading", name="iOS and iPadOS")).to_be_visible()
+        expect(page.get_by_text("Installing on a phone instead?")).to_be_visible()
 
     def test_a_failing_prompt_falls_back_to_the_manual_steps(self):
         page = self.open_about()
@@ -150,3 +159,33 @@ class AboutInstallSectionTests(StaticLiveServerTestCase):
         page.evaluate("() => window.dispatchEvent(new Event('appinstalled'))")
 
         expect(self.install_button(page)).to_be_hidden()
+
+    def panel(self, page, heading):
+        return page.get_by_role("heading", name=heading).locator("xpath=ancestor::div[1]")
+
+    def test_only_the_visitors_platform_panel_is_shown(self):
+        for name, kwargs, visible, hidden in (
+            ("ios", {"user_agent": IOS_UA}, "iOS and iPadOS", "Android"),
+            ("android", {"user_agent": ANDROID_UA}, "Android", "iOS and iPadOS"),
+        ):
+            with self.subTest(platform=name):
+                page = self.open_about(viewport={"width": 390, "height": 844}, **kwargs)
+                expect(self.panel(page, visible)).to_be_visible()
+                expect(self.panel(page, hidden)).to_be_hidden()
+
+    def test_desktop_hides_both_phone_panels(self):
+        page = self.open_about()
+
+        expect(self.panel(page, "iOS and iPadOS")).to_be_hidden()
+        expect(self.panel(page, "Android")).to_be_hidden()
+        expect(page.get_by_text("Installing on a phone instead?")).to_be_visible()
+
+    def test_about_page_does_not_scroll_sideways_on_a_phone(self):
+        page = self.open_about(viewport={"width": 390, "height": 844}, user_agent=IOS_UA)
+
+        widths = page.evaluate(
+            "() => ({view: document.documentElement.clientWidth,"
+            " scroll: document.documentElement.scrollWidth})",
+        )
+
+        self.assertEqual(widths["scroll"], widths["view"])

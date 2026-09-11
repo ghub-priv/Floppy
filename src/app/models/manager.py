@@ -485,6 +485,91 @@ class MediaManager(models.Manager):
         # can materialize fresh model instances and drop dynamic aggregated attrs.
         return self._aggregate_duplicate_data(queryset, user, media_type, dup_state)
 
+    def get_media_list_item_values(
+        self,
+        user,
+        media_type,
+        status_filter,
+        search=None,
+        *,
+        list_sql_filters=None,
+    ):
+        """Return narrow Item projections for a media-list filter menu.
+
+        This intentionally does not hydrate tracker rows, related objects, or
+        duplicate aggregation.  It mirrors the SQL candidate filters so a
+        cold SQL-paginated request can build its menu without loading the
+        user's complete media library into Python.
+        """
+        model = apps.get_model(app_label="app", model_name=media_type)
+        queryset = model.objects.filter(user=user.id)
+
+        if isinstance(status_filter, (list, tuple, set, frozenset)):
+            status_filters = [
+                value
+                for value in status_filter
+                if value and value != users.models.MediaStatusChoices.ALL
+            ]
+        elif status_filter and status_filter != users.models.MediaStatusChoices.ALL:
+            status_filters = [status_filter]
+        else:
+            status_filters = []
+        if status_filters:
+            queryset = queryset.filter(status__in=status_filters)
+        else:
+            queryset = queryset.exclude(status__isnull=True)
+
+        if search:
+            queryset = queryset.filter(
+                models.Q(item__title__icontains=search)
+                | models.Q(item__media_id__icontains=search),
+            )
+        queryset = self._apply_list_sql_filters(
+            queryset, user, media_type, list_sql_filters or {}
+        )
+
+        # Match the status semantics used by the rendered web list: when a
+        # status is selected, it refers to the latest aggregated activity,
+        # not merely to the existence of an older row in that status.
+        if status_filters:
+            activity = Case(
+                When(end_date__isnull=False, then=F("end_date")),
+                When(progressed_at__isnull=False, then=F("progressed_at")),
+                default=F("created_at"),
+                output_field=models.DateTimeField(),
+            )
+            latest_status = (
+                model.objects.filter(item_id=OuterRef("item_id"), user=user.id)
+                .annotate(_activity=activity)
+                .order_by("-_activity", "-id")
+                .values("status")[:1]
+            )
+            queryset = queryset.annotate(_latest_status=Subquery(latest_status)).filter(
+                _latest_status__in=status_filters
+            )
+
+        item_queryset = Item.objects.filter(
+            pk__in=queryset.values("item_id")
+        ).order_by()
+        return item_queryset.values(
+            "id",
+            "media_id",
+            "media_type",
+            "library_media_type",
+            "title",
+            "release_datetime",
+            "genres",
+            "implied_genres",
+            "watch_providers",
+            "country",
+            "languages",
+            "platforms",
+            "format",
+            "authors",
+            "source",
+            "status",
+        )
+
     def _get_paginated_media_list_sql(
         self,
         user,
@@ -546,6 +631,28 @@ class MediaManager(models.Manager):
             ),
         ).filter(row_number=1)
 
+        # The web list applies status filters to the latest aggregated status,
+        # rather than merely to whichever duplicate happened to survive the
+        # display-row deduplication.  Keep that behavior in the SQL path too.
+        # The correlated subquery is scoped to the user's complete history so
+        # an older row in another status cannot make a duplicate visible.
+        if status_filters:
+            activity = Case(
+                When(end_date__isnull=False, then=F("end_date")),
+                When(progressed_at__isnull=False, then=F("progressed_at")),
+                default=F("created_at"),
+                output_field=models.DateTimeField(),
+            )
+            latest_status = (
+                model.objects.filter(item_id=OuterRef("item_id"), user=user.id)
+                .annotate(_activity=activity)
+                .order_by("-_activity", "-id")
+                .values("status")[:1]
+            )
+            queryset = queryset.annotate(_latest_status=Subquery(latest_status)).filter(
+                _latest_status__in=status_filters
+            )
+
         sort_key = sort_filter or "title"
         agg_subquery = self._aggregated_sort_subquery(model, user, media_type, sort_key)
         if agg_subquery is not None:
@@ -563,6 +670,7 @@ class MediaManager(models.Manager):
         queryset = queryset.order_by(
             order_expr.desc(nulls_last=True) if is_desc else order_expr.asc(nulls_last=True),
             title_tiebreak.desc() if is_desc else title_tiebreak.asc(),
+            F("item_id").desc() if is_desc else F("item_id").asc(),
         )
 
         total = queryset.count()
@@ -639,19 +747,16 @@ class MediaManager(models.Manager):
             # Using all statuses is intentional: an item filtered as IN_PROGRESS may have
             # a more-recent COMPLETED entry that should determine its aggregated_status.
             #
-            # _aggregate_item_data only reads scalar history fields from these
-            # duplicate rows; item metadata comes from the displayed media row.
-            # Do not select_related Item here: default model ordering may still
-            # require an SQL join, but hydrating Item columns for every duplicate
-            # row is unnecessary. _apply_prefetch_related is also intentionally
-            # skipped: the events/tags/seasons/episodes
+            # _aggregate_item_data only reads scalar fields (progress, status, dates,
+            # score) and item.media_type off these entries, so this intentionally
+            # skips _apply_prefetch_related: the events/tags/seasons/episodes
             # prefetch bundle it would pull in is for the *displayed* media_list,
             # not this internal aggregation pass, and re-fetching it here was
             # doubling those queries for every list page.
             all_media = model.objects.filter(
                 user=user.id,
                 item_id__in=queried_item_ids,
-            )
+            ).select_related("item")
 
             # Group media by item_id
             media_by_item = {}
@@ -774,9 +879,7 @@ class MediaManager(models.Manager):
                 # instantiation time proportionally for large libraries.
                 episode_qs = episode_qs.only(
                     "id",
-                    "created_at",
                     "end_date",
-                    "score",
                     "status",
                     "related_season_id",
                     "item__id",
@@ -1261,9 +1364,7 @@ class MediaManager(models.Manager):
             filtered = []
             for media in media_list:
                 latest_status = getattr(media, "aggregated_status", None) or getattr(
-                    media,
-                    "status",
-                    None,
+                    media, "status", None
                 )
                 if latest_status == desired_status:
                     filtered.append(media)
@@ -1281,8 +1382,7 @@ class MediaManager(models.Manager):
             )
             in_progress_list = list(in_progress_list)
             in_progress_list = filter_by_latest_status(
-                in_progress_list,
-                Status.IN_PROGRESS.value,
+                in_progress_list, Status.IN_PROGRESS.value
             )
 
             # Get planned items if needed
@@ -1295,8 +1395,7 @@ class MediaManager(models.Manager):
                     sort_filter=None,
                 )
                 planned_list = filter_by_latest_status(
-                    list(planned_queryset),
-                    Status.PLANNING.value,
+                    list(planned_queryset), Status.PLANNING.value
                 )
 
             # Handle different modes
@@ -1378,13 +1477,12 @@ class MediaManager(models.Manager):
                         self._fix_missing_season_images(in_progress_processed)
 
                     sorted_in_progress = self._sort_in_progress_media(
-                        in_progress_processed,
-                        sort_by,
+                        in_progress_processed, sort_by
                     )
                     total_in_progress = len(sorted_in_progress)
 
                     if specific_media_type and specific_media_type.endswith(
-                        "_in_progress",
+                        "_in_progress"
                     ):
                         paginated_in_progress = sorted_in_progress[items_limit:]
                     else:
@@ -1407,8 +1505,7 @@ class MediaManager(models.Manager):
                         self._fix_missing_season_images(planned_processed)
 
                     sorted_planned = self._sort_in_progress_media(
-                        planned_processed,
-                        sort_by,
+                        planned_processed, sort_by
                     )
                     total_planned = len(sorted_planned)
 
@@ -1710,8 +1807,7 @@ class MediaManager(models.Manager):
                     else:
                         # Fall back to database annotation if metadata doesn't have max_progress
                         self._annotate_season_released_episodes(
-                            [season],
-                            current_datetime,
+                            [season], current_datetime
                         )
                 except Exception:
                     # If metadata fetch fails, fall back to database annotation

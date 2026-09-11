@@ -1,6 +1,9 @@
 """Smoke tests for music subview Home rows (albums/artists/tracks)."""
 
 import json
+import pickle
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -14,6 +17,16 @@ from users.models import (
     HomeScreenRowTypeChoices,
     MediaStatusChoices,
 )
+
+
+@dataclass
+class _FakeTrack:
+    """Minimal stand-in for a Track: only the attributes the row builder reads."""
+
+    album: object
+    repeats: int
+    last_played_at: object
+    created_at: object
 
 
 class MusicSubviewHomeTests(TestCase):
@@ -117,6 +130,24 @@ class MusicSubviewHomeTests(TestCase):
         self.assertContains(response, "A Night at the Opera")
         # Album cards carry the artist as the hover subtitle (mirrors the library).
         self.assertContains(response, "Queen")
+
+    def test_recent_music_album_entries_are_picklable(self):
+        # Regression test for #1122: the "Recently Played Music" row is cached
+        # via django_redis, which pickles cache values. A locally-scoped
+        # adapter class previously broke this with an unpicklable-object error.
+        now = datetime(2024, 1, 1, tzinfo=UTC)
+        track = _FakeTrack(
+            album=self.album,
+            repeats=3,
+            last_played_at=now,
+            created_at=now,
+        )
+        entries = home_screen._build_recent_music_album_entries([track])
+        self.assertEqual(len(entries), 1)
+
+        roundtripped = pickle.loads(pickle.dumps(entries))
+        self.assertEqual(roundtripped[0].media.title, "A Night at the Opera")
+        self.assertEqual(roundtripped[0].media.play_count, 3)
 
     def test_home_page_renders_artist_card(self):
         self._add_music_row("artists", Status.IN_PROGRESS.value)

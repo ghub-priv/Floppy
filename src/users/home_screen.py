@@ -1595,6 +1595,24 @@ class _ArtistHomeAdapter(_MusicTrackerAdapter):
         self.card_subtitle_date = getattr(tracker, "created_at", None)
 
 
+class _RecentAlbumAdapter:
+    """Media-like wrapper around an Album for the recently-played music row."""
+
+    def __init__(self, album, play_count, last_played_at, primary_track):
+        self.album = album
+        self.id = album.id
+        self.play_count = play_count
+        self.last_played_at = last_played_at
+        self.created_at = last_played_at
+        self.status = None
+        self.end_date = last_played_at
+        self.next_event = None
+        self.score = None
+        self.title = album.title
+        self.item = _music_shell_item(f"album_{album.id}", album.title, album.image)
+        self.primary_track = primary_track
+
+
 def _apply_music_tracker_rating_filter(trackers, rating_filter: str):
     if rating_filter == "rated":
         return trackers.filter(score__isnull=False)
@@ -1713,21 +1731,6 @@ def _build_recent_music_album_entries(media_items: list[object]) -> list[HomeRow
             album_last_played[album_id] = last_played
             album_primary_track[album_id] = track
 
-    class AlbumAdapter:
-        def __init__(self, album, play_count, last_played_at, primary_track):
-            self.album = album
-            self.id = album.id
-            self.play_count = play_count
-            self.last_played_at = last_played_at
-            self.created_at = last_played_at
-            self.status = None
-            self.end_date = last_played_at
-            self.next_event = None
-            self.score = None
-            self.title = album.title
-            self.item = _music_shell_item(f"album_{album.id}", album.title, album.image)
-            self.primary_track = primary_track
-
     entries = [
         HomeRowEntry(
             item=adapter.item,
@@ -1735,7 +1738,7 @@ def _build_recent_music_album_entries(media_items: list[object]) -> list[HomeRow
             show_progress_controls=False,
         )
         for adapter in [
-            AlbumAdapter(
+            _RecentAlbumAdapter(
                 albums_by_id[album_id],
                 album_play_counts[album_id],
                 album_last_played[album_id],

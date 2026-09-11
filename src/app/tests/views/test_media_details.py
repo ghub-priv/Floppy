@@ -1141,6 +1141,89 @@ class MediaDetailsViewTests(TestCase):
     @patch("app.services.music.needs_discography_sync", return_value=False)
     @patch("app.services.music_scrobble.dedupe_artist_albums")
     @patch("app.providers.musicbrainz.get_artist")
+    def test_music_artist_cover_refresh_preserves_scores_and_loaded_covers(
+        self,
+        mock_get_artist,
+        _mock_dedupe_artist_albums,
+        _mock_needs_discography_sync,
+    ):
+        artist = Artist.objects.create(
+            name="Refresh Artist",
+            musicbrainz_id="refresh-artist-mbid",
+            image="http://example.com/artist.jpg",
+            discography_synced_at=timezone.now(),
+        )
+        scored_album = Album.objects.create(
+            title="Scored Album",
+            artist=artist,
+            musicbrainz_release_id="scored-release-mbid",
+            image="http://example.com/scored-album.jpg",
+        )
+        Album.objects.create(
+            title="Missing Cover Album",
+            artist=artist,
+            musicbrainz_release_id="missing-cover-release-mbid",
+            image="",
+        )
+        AlbumTracker.objects.create(
+            user=self.user,
+            album=scored_album,
+            status=Status.COMPLETED.value,
+            score=7.5,
+        )
+        mock_get_artist.return_value = {
+            "type": "Group",
+            "country": "US",
+            "genres": [],
+            "tags": [],
+            "rating": None,
+            "rating_count": 0,
+            "bio": "",
+            "image": "http://example.com/artist.jpg",
+        }
+
+        detail_response = self.client.get(
+            reverse(
+                "music_artist_details",
+                kwargs={
+                    "artist_id": artist.id,
+                    "artist_slug": "refresh-artist",
+                },
+            ),
+        )
+
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertContains(detail_response, "7.5")
+        self.assertContains(
+            detail_response,
+            reverse("prefetch_artist_covers", args=[artist.id]),
+        )
+        self.assertContains(
+            detail_response,
+            f'id="album-cover-{scored_album.id}"',
+            html=False,
+        )
+        self.assertContains(detail_response, "hx-preserve", html=False)
+
+        with patch("app.tasks.prefetch_album_covers_batch.delay") as mock_delay:
+            refresh_response = self.client.get(
+                reverse("prefetch_artist_covers", args=[artist.id]),
+            )
+
+        self.assertEqual(refresh_response.status_code, 200)
+        mock_delay.assert_called_once_with([artist.id], limit_per_artist=None)
+        self.assertContains(refresh_response, "7.5")
+        self.assertContains(
+            refresh_response,
+            f'id="album-cover-{scored_album.id}"',
+            html=False,
+        )
+        self.assertContains(refresh_response, "hx-preserve", html=False)
+        self.assertContains(refresh_response, "Refreshing cover art")
+
+    @patch("app.services.music.needs_discography_sync", return_value=False)
+    @patch("app.services.music_scrobble.dedupe_artist_albums")
+    @patch("app.providers.musicbrainz.get_artist")
     def test_music_artist_details_renders_band_members(
         self,
         mock_get_artist,
@@ -6574,6 +6657,145 @@ class MediaDetailsViewTests(TestCase):
             html=False,
         )
         mock_process_episodes.assert_called_once()
+
+    @patch("app.providers.services.get_media_metadata")
+    @patch("app.providers.tmdb.process_episodes")
+    def test_season_details_secondary_fragment_skips_link_for_unnumbered_episode(
+        self,
+        mock_process_episodes,
+        mock_get_metadata,
+    ):
+        """An episode with no numeric episode_number must not 500 via NoReverseMatch.
+
+        Regression test for a follow-up finding on issue #1132: coercing a bad
+        provider episode number to None (instead of leaving the raw bad value)
+        must not crash the {% url 'episode_details' ... episode_number=... %}
+        reversal in detail_secondary_content.html, which requires an int.
+        """
+        mock_get_metadata.side_effect = lambda *_args, **_kwargs: {
+            "title": "Test TV Show",
+            "media_id": "1668",
+            "source": Sources.TMDB.value,
+            "media_type": MediaTypes.TV.value,
+            "image": "http://example.com/image.jpg",
+            "season/1": {
+                "title": "Season 1",
+                "season_title": "Season 1",
+                "media_id": "1668",
+                "media_type": MediaTypes.SEASON.value,
+                "source": Sources.TMDB.value,
+                "image": "http://example.com/season.jpg",
+                "episodes": [],
+            },
+        }
+
+        mock_process_episodes.return_value = [
+            {
+                "media_id": "1668",
+                "source": Sources.TMDB.value,
+                "media_type": MediaTypes.EPISODE.value,
+                "season_number": 1,
+                "episode_number": None,
+                "title": "Unannounced episode",
+                "air_date": None,
+                "actions_enabled": False,
+            },
+        ]
+
+        response = self.client.get(
+            reverse(
+                "season_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_id": "1668",
+                    "title": "test-tv-show",
+                    "season_number": 1,
+                },
+            ),
+            {"fragment": "secondary"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Unannounced episode")
+
+    @patch("app.providers.services.get_media_metadata")
+    @patch("app.providers.tmdb.process_episodes")
+    def test_season_details_renders_with_non_numeric_sibling_season_max_progress(
+        self,
+        mock_process_episodes,
+        mock_get_metadata,
+    ):
+        """A sibling season card with a non-numeric max_progress must not 500.
+
+        Regression test for issue #1132: bad provider data (e.g. a non-numeric
+        episode count) previously reached {% blocktranslate count %} unmodified
+        and raised TemplateSyntaxError, 500ing the whole season page.
+        """
+        mock_get_metadata.side_effect = lambda *_args, **_kwargs: {
+            "title": "Test TV Show",
+            "media_id": "1668",
+            "source": Sources.TMDB.value,
+            "media_type": MediaTypes.TV.value,
+            "image": "http://example.com/image.jpg",
+            "related": {
+                "seasons": [
+                    {
+                        "media_id": "1668",
+                        "media_type": MediaTypes.SEASON.value,
+                        "source": Sources.TMDB.value,
+                        "season_number": 2,
+                        "title": "Test TV Show",
+                        "season_title": "Season 2",
+                        "image": "http://example.com/season2.jpg",
+                        "max_progress": "TBA",
+                        "episode_count": "TBA",
+                        "progress": 1,
+                    },
+                ],
+            },
+            "season/1": {
+                "title": "Season 1",
+                "season_title": "Season 1",
+                "media_id": "1668",
+                "media_type": MediaTypes.SEASON.value,
+                "source": Sources.TMDB.value,
+                "image": "http://example.com/season.jpg",
+                "episodes": [],
+                "related": {
+                    "seasons": [
+                        {
+                            "media_id": "1668",
+                            "media_type": MediaTypes.SEASON.value,
+                            "source": Sources.TMDB.value,
+                            "season_number": 2,
+                            "title": "Test TV Show",
+                            "season_title": "Season 2",
+                            "image": "http://example.com/season2.jpg",
+                            "max_progress": "TBA",
+                            "episode_count": "TBA",
+                            "progress": 1,
+                        },
+                    ],
+                },
+            },
+        }
+
+        mock_process_episodes.return_value = []
+
+        response = self.client.get(
+            reverse(
+                "season_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_id": "1668",
+                    "title": "test-tv-show",
+                    "season_number": 1,
+                },
+            ),
+            {"fragment": "secondary"},
+        )
+
+        self.assertEqual(response.status_code, 200)
 
     @patch("app.providers.services.get_media_metadata")
     @patch("app.providers.tmdb.process_episodes")

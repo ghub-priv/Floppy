@@ -19,7 +19,7 @@
       </div>
       <div class="mb-3 text-sm font-medium text-[var(--color-text-muted)]">
         <div class="flex flex-wrap items-center gap-y-1">
-          <span>{% blocktranslate trimmed with value_1=items_count count count=items_count %}{{ value_1 }} item{% plural %}{{ value_1 }} items{% endblocktranslate %}</span>
+          <span data-list-item-count>{% blocktranslate trimmed with value_1=items_count count count=items_count %}{{ value_1 }} item{% plural %}{{ value_1 }} items{% endblocktranslate %}</span>
           {% if completion_percent is not None %}
             <span class="mx-2 text-gray-600">•</span>
             <div class="relative inline-flex"

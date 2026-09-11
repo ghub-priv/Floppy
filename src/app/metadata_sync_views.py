@@ -12,6 +12,7 @@ from django.db.utils import OperationalError
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.translation import gettext
 from django.views.decorators.http import require_GET, require_POST
@@ -1643,6 +1644,9 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
         # null a comic/manga count another path stored (#1077).
         if number_of_pages is not None:
             item_fields["number_of_pages"] = number_of_pages
+        # Stamped at the single point provider metadata is written, so
+        # freshness cannot drift from the data it describes.
+        item_fields["metadata_refreshed_at"] = timezone.now()
         if item is None:
             item = Item.objects.create(
                 media_id=media_id,
