@@ -64,7 +64,10 @@ TV_LIST_DEFAULT_SORT_MAX_QUERIES = 24  # pinned after Fix 1+2+3 (was 2642 in pro
 TV_LIST_TIME_LEFT_SORT_MAX_QUERIES = (
     26  # pinned after Fix 4 bulk runtime load (was ~400+ per-season queries)
 )
-MOVIE_LIST_DEFAULT_SORT_MAX_QUERIES = 14
+MOVIE_LIST_DEFAULT_SORT_MAX_QUERIES = (
+    16  # +2 for the bounded cold-request COUNT/facet work introduced by the
+    # SQL-first media-list pagination path (#1004); warm-cache pins remain 12.
+)
 ANIME_LIST_DEFAULT_SORT_MAX_QUERIES = (
     22  # +2 over the pre-credential-registry pin: resolving the MAL/TMDB
     # credentials reads the instance credential table and the viewer's personal

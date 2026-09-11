@@ -873,13 +873,16 @@ class MediaManager(models.Manager):
         ):
             episode_qs = Episode.objects.select_related("item")
             if list_mode:
-                # Load only the fields accessed in the list path:
-                # ep.item.episode_number, ep.end_date, and ep.status. Deferring
-                # the remaining ~30 Item columns cuts Django object
-                # instantiation time proportionally for large libraries.
+                # Load only the fields accessed in the list path. Derived TV
+                # ratings rendered on list cards also need created_at and score;
+                # deferring either turns the prefetched episode scan into an N+1.
+                # Keeping the remaining Item columns deferred still avoids
+                # materializing the full episode Item payload for large libraries.
                 episode_qs = episode_qs.only(
                     "id",
+                    "created_at",
                     "end_date",
+                    "score",
                     "status",
                     "related_season_id",
                     "item__id",
