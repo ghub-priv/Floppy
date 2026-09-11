@@ -63,6 +63,9 @@ def can_paginate_in_sql(
             rating_max=filters.get("rating_max", ""),
             collection=filters.get("collection", "all"),
             progress=filters.get("progress", "all"),
+            genre=filters.get("genre", ""),
+            implied_genre=filters.get("implied_genre", ""),
+            language=filters.get("language", ""),
             format=filters.get("format", ""),
             author=filters.get("author", ""),
             provider=filters.get("provider", ""),
@@ -89,6 +92,18 @@ def can_paginate_in_sql(
         or getattr(filters, "rating_max", "")
         or filters.collection != "all"
         or filters.progress != "all"
+    ):
+        return False
+    # The case-insensitive JSON-array helper currently uses .extra() with the
+    # concrete media table name. Django cannot relabel that raw SQL when the
+    # filtered media queryset is embedded by get_media_list_item_values(), so
+    # the SQL-pagination path can generate stale references such as
+    # app_movie.item_id after the table has been aliased. Keep these filters
+    # on the existing top-level SQL path until that helper is made alias-safe.
+    if (
+        getattr(filters, "genre", "")
+        or getattr(filters, "implied_genre", "")
+        or getattr(filters, "language", "")
     ):
         return False
     # provider_region defaults to the sentinel "UNSET" (truthy) and is only
