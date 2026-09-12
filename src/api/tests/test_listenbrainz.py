@@ -8,6 +8,7 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from app.models import Music
+from integrations.models import IntegrationToken
 
 SUBMIT_URL = "/apis/listenbrainz/1/submit-listens"
 VALIDATE_URL = "/apis/listenbrainz/1/validate-token"
@@ -32,7 +33,12 @@ class ListenBrainzTestCase(APITestCase):
         self.user = get_user_model().objects.create_user(username="lbz-user")
         self.user.music_enabled = True
         self.user.save()
-        self.auth = {"HTTP_AUTHORIZATION": f"Token {self.user.token}"}
+        _, raw_token = IntegrationToken.generate(
+            user=self.user,
+            name="ListenBrainz test client",
+            scopes=["scrobble:write"],
+        )
+        self.auth = {"HTTP_AUTHORIZATION": f"Token {raw_token}"}
 
         for name in ("search", "search_artists"):
             patcher = patch(
@@ -67,6 +73,14 @@ class ListenBrainzAuthTests(ListenBrainzTestCase):
         response = self.submit(
             {"listen_type": "single", "payload": [_listen()]},
             headers={"HTTP_AUTHORIZATION": "Token not-a-real-token"},
+        )
+        self.assertEqual(response.status_code, HTTP.UNAUTHORIZED)
+
+    def test_legacy_account_token_rejected(self):
+        """An account webhook token cannot be replayed as a ListenBrainz token."""
+        response = self.submit(
+            {"listen_type": "single", "payload": [_listen()]},
+            headers={"HTTP_AUTHORIZATION": f"Token {self.user.token}"},
         )
         self.assertEqual(response.status_code, HTTP.UNAUTHORIZED)
 
