@@ -79,7 +79,7 @@ ANIME_LIST_GROUPED_MAX_QUERIES = (
     # +2 from the instance and personal provider-credential reads
 )
 MANGA_LIST_DEFAULT_SORT_MAX_QUERIES = 14
-MANGA_LIST_NO_STATUS_MAX_QUERIES = 18
+MANGA_LIST_NO_STATUS_QUERY_BUDGET = 18
 GAME_LIST_DEFAULT_SORT_MAX_QUERIES = 18
 GAME_LIST_START_DATE_SORT_LIBRARY_SIZE = 150
 GAME_LIST_START_DATE_SORT_MAX_QUERIES = (
@@ -445,7 +445,7 @@ class QueryCountTests(TestCase):
     def test_manga_list_no_status_query_budget(self):
         self._assert_query_budget(
             "/medialist/manga?status=no_status",
-            MANGA_LIST_NO_STATUS_MAX_QUERIES,
+            MANGA_LIST_NO_STATUS_QUERY_BUDGET,
             "manga list no status",
         )
 
@@ -478,7 +478,6 @@ class QueryCountTests(TestCase):
             response = self.client.get(
                 "/api/v1/media/game/",
                 {"status": "1", "limit": 10, "sort": "start_date", "direction": "asc"},
-                HTTP_X_API_KEY=self.user.token,
             )
         self.assertEqual(response.status_code, 200)
         # >= not ==: setUpTestData's seed_game_library also seeds
