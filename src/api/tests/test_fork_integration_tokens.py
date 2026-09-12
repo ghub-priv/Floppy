@@ -205,34 +205,26 @@ class IntegrationTokenAuthHeaderTests(FloppyApiTestCase):
                 )
                 self.assertEqual(response.status_code, HTTP.FORBIDDEN)
 
-    def test_backward_compatibility_legacy_user_token(self):
-        """Legacy User.token authenticates via all supported header formats."""
-        # Test legacy key in X-API-Key header
-        res1 = self.call_api(
-            "post",
-            "api_scrobble",
-            payload={"action": "start", "media_type": "movie", "ids": {"tmdb": "603"}},
-            headers={"HTTP_X_API_KEY": self.user1.token},
-        )
-        self.assertEqual(res1.status_code, HTTP.OK)
-
-        # Test legacy key in Bearer header
-        res2 = self.call_api(
-            "post",
-            "api_scrobble",
-            payload={"action": "start", "media_type": "movie", "ids": {"tmdb": "603"}},
-            headers={"HTTP_AUTHORIZATION": f"Bearer {self.user1.token}"},
-        )
-        self.assertEqual(res2.status_code, HTTP.OK)
-
-        # Test legacy key in Token header
-        res3 = self.call_api(
-            "post",
-            "api_scrobble",
-            payload={"action": "start", "media_type": "movie", "ids": {"tmdb": "603"}},
-            headers={"HTTP_AUTHORIZATION": f"Token {self.user1.token}"},
-        )
-        self.assertEqual(res3.status_code, HTTP.OK)
+    def test_legacy_account_token_rejected_in_all_header_formats(self):
+        """User.token is not a general API credential in any supported header."""
+        headers = [
+            {"HTTP_X_API_KEY": self.user1.token},
+            {"HTTP_AUTHORIZATION": f"Bearer {self.user1.token}"},
+            {"HTTP_AUTHORIZATION": f"Token {self.user1.token}"},
+        ]
+        for header in headers:
+            with self.subTest(header=header):
+                response = self.call_api(
+                    "post",
+                    "api_scrobble",
+                    payload={
+                        "action": "start",
+                        "media_type": "movie",
+                        "ids": {"tmdb": "603"},
+                    },
+                    headers=header,
+                )
+                self.assertEqual(response.status_code, HTTP.FORBIDDEN)
 
     def test_user_isolation_with_integration_token(self):
         """Actions performed with user1's integration token are isolated to user1."""
@@ -275,8 +267,8 @@ class ScopePermissionTests(FloppyApiTestCase):
         self.assertTrue(perm.has_permission(req, None))
         self.assertFalse(perm_denied.has_permission(req, None))
 
-    def test_has_scope_permission_legacy_token_full_access(self):
-        """Legacy token (request.auth is None) passes all scope checks."""
+    def test_has_scope_permission_session_auth_full_access(self):
+        """Session auth has no token object and is not restricted by token scopes."""
         perm = HasScope("any:restricted:scope")
 
         req = Mock()
