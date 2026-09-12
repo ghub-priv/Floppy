@@ -23,6 +23,7 @@ from app.models import (
     Status,
 )
 from events.models import Event
+from integrations.models import IntegrationToken
 from lists.models import CustomList, CustomListItem
 
 
@@ -37,8 +38,20 @@ class FloppyApiTestCase(APITestCase):
         self.user2 = get_user_model().objects.create_user(
             username="api-test-user2",
         )
-        self.auth_headers = {"HTTP_X_API_KEY": self.user1.token}
-        self.auth_headers2 = {"HTTP_X_API_KEY": self.user2.token}
+        self.legacy_auth_headers = {"HTTP_X_API_KEY": self.user1.token}
+        self.legacy_auth_headers2 = {"HTTP_X_API_KEY": self.user2.token}
+        _, raw_token1 = IntegrationToken.generate(
+            user=self.user1,
+            name="API test client",
+            scopes=["*"],
+        )
+        _, raw_token2 = IntegrationToken.generate(
+            user=self.user2,
+            name="API test client",
+            scopes=["*"],
+        )
+        self.auth_headers = {"HTTP_X_API_KEY": raw_token1}
+        self.auth_headers2 = {"HTTP_X_API_KEY": raw_token2}
         self.invalid_auth_headers = {"HTTP_X_API_KEY": "invalid-token"}
 
         # Disable external side effects while creating many media fixtures.
