@@ -39,12 +39,12 @@ class SmartRulesTests(FloppyApiTestCase):
 
     def test_put_rules_syncs_membership(self):
         """PUT normalizes rules and syncs items into the list."""
+        self.client.force_authenticate(user=self.user1)
         response = self.call_api(
             "put",
             "api_list_smart_rules",
             args=(self.smart_list.id,),
             payload={"media_types": [MediaTypes.MOVIE.value]},
-            headers=self.auth_headers,
         )
         self.assertEqual(response.status_code, HTTP.OK)
         # The base fixtures track three movies for user1.
@@ -52,12 +52,12 @@ class SmartRulesTests(FloppyApiTestCase):
 
     def test_put_rules_accepts_episode_media_type(self):
         """Episode is a first-class smart-rule media type and round-trips."""
+        self.client.force_authenticate(user=self.user1)
         response = self.call_api(
             "put",
             "api_list_smart_rules",
             args=(self.smart_list.id,),
             payload={"media_types": [MediaTypes.EPISODE.value]},
-            headers=self.auth_headers,
         )
         self.assertEqual(response.status_code, HTTP.OK)
         self.assertEqual(
@@ -85,12 +85,12 @@ class SmartRulesTests(FloppyApiTestCase):
 
     def test_smart_sync(self):
         """POST smart-sync repopulates membership."""
+        self.client.force_authenticate(user=self.user1)
         response = self.call_api(
             "post",
             "api_list_smart_sync",
             args=(self.smart_list.id,),
             payload={},
-            headers=self.auth_headers,
         )
         self.assertEqual(response.status_code, HTTP.OK)
         self.assertEqual(response.json()["items_count"], 3)

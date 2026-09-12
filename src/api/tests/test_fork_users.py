@@ -175,15 +175,17 @@ class NotificationsTests(FloppyApiTestCase):
 class TokenRegenerateTests(FloppyApiTestCase):
     """POST user/token/regenerate."""
 
-    def test_regenerate_rotates_token(self):
-        """The new token is returned and the old credential stops working."""
+    def test_regenerate_rotates_account_token_for_session_user(self):
+        """A session user can rotate the token, but it is not an API credential."""
         old_token = self.user1.token
+        self.client.force_authenticate(user=self.user1)
         response = self.call_api(
             "post",
             "api_user_token_regenerate",
             payload={},
-            headers=self.auth_headers,
         )
+        self.client.force_authenticate(user=None)
+
         self.assertEqual(response.status_code, HTTP.OK)
         new_token = response.json()["token"]
         self.assertNotEqual(new_token, old_token)
@@ -200,4 +202,4 @@ class TokenRegenerateTests(FloppyApiTestCase):
             "api_user_preferences",
             headers={"HTTP_X_API_KEY": new_token},
         )
-        self.assertEqual(fresh.status_code, HTTP.OK)
+        self.assertEqual(fresh.status_code, HTTP.FORBIDDEN)

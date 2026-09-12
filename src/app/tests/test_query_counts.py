@@ -34,6 +34,7 @@ from app.models import (
     Status,
 )
 from app.tv_sort import RUNTIME_UNKNOWN_AIRED
+from integrations.models import IntegrationToken
 from lists.models import CustomList, CustomListItem
 from users.home_screen import ensure_home_screen_rows
 from users.models import HomeScreenRowTypeChoices
@@ -474,11 +475,18 @@ class QueryCountTests(TestCase):
             )
             Game.objects.create(item=item, user=self.user, status=Status.IN_PROGRESS.value)
 
+        token, raw_token = IntegrationToken.generate(
+            user=self.user,
+            name="query-count API client",
+            scopes=["watchlist:read"],
+        )
+        IntegrationToken.objects.filter(pk=token.pk).update(last_used_at=datetime.now(UTC))
+
         with CaptureQueriesContext(connection) as context:
             response = self.client.get(
                 "/api/v1/media/game/",
                 {"status": "1", "limit": 10, "sort": "start_date", "direction": "asc"},
-                HTTP_X_API_KEY=self.user.token,
+                HTTP_X_API_KEY=raw_token,
             )
         self.assertEqual(response.status_code, 200)
         # >= not ==: setUpTestData's seed_game_library also seeds

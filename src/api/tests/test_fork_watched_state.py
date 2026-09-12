@@ -26,6 +26,7 @@ from app.models import (
 from app.services.watch_state import effective_state
 from integrations.models import (
     CAPABILITY_WATCHED_READ,
+    IntegrationToken,
     StateConflict,
     StateConflictReason,
     StateConflictStatus,
@@ -50,10 +51,23 @@ def _dt(day):
 
 
 class WatchedStateAPITestCase(APITestCase):
+    def api_token_for(self, user):
+        """Mint a scoped token covering the watched-state sync surface."""
+        _, raw_token = IntegrationToken.generate(
+            user=user,
+            name="watched-state test client",
+            scopes=[
+                "watchlist:read",
+                "watchlist:write",
+                "sync:read",
+                "sync:write",
+            ],
+        )
+        return raw_token
+
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="owner")
-        # The API authenticates on a token header, not a session.
-        self.client.credentials(HTTP_X_API_KEY=self.user.token)
+        self.client.credentials(HTTP_X_API_KEY=self.api_token_for(self.user))
         self.item, _ = Item.objects.get_or_create(
             media_id="603",
             source=Sources.TMDB.value,
@@ -234,7 +248,7 @@ class SetStateTests(WatchedStateAPITestCase):
             content_type="application/json",
         )
 
-        self.client.credentials(HTTP_X_API_KEY=other.token)
+        self.client.credentials(HTTP_X_API_KEY=self.api_token_for(other))
         self.assertFalse(self.client.get(self.url).json()["watched"])
 
 
@@ -289,7 +303,7 @@ class ChangeFeedTests(WatchedStateAPITestCase):
             content_type="application/json",
         )
 
-        self.client.credentials(HTTP_X_API_KEY=other.token)
+        self.client.credentials(HTTP_X_API_KEY=self.api_token_for(other))
         payload = self.client.get(reverse("api_sync_changes")).json()
 
         self.assertEqual(payload["results"], [])
@@ -384,7 +398,7 @@ class ConflictTests(WatchedStateAPITestCase):
     def test_another_users_conflict_is_not_resolvable(self):
         conflict = self._conflict()
         other = get_user_model().objects.create_user(username="other")
-        self.client.credentials(HTTP_X_API_KEY=other.token)
+        self.client.credentials(HTTP_X_API_KEY=self.api_token_for(other))
 
         response = self.client.post(
             reverse(

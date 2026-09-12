@@ -5,8 +5,10 @@ view's ``module.ClassName`` so a new endpoint is invisible to scoped tokens unti
 it is named here; ``api.tests.test_fork_scope_enforcement`` fails the build when a
 routed view is missing, so the omission cannot ship silently.
 
-Legacy ``User.token`` credentials and session logins are unaffected: they carry no
-token object and keep full access.
+Session logins carry no token object and keep full access. Header-based API
+credentials must be scoped ``IntegrationToken`` records; legacy ``User.token``
+values are reserved for purpose-specific compatibility routes and are not API
+credentials.
 """
 
 # Any authenticated credential may reach the endpoint. Used for endpoints that

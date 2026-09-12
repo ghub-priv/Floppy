@@ -10,7 +10,6 @@ from rest_framework.permissions import BasePermission
 
 from api.scopes import ANY_SCOPE, NEVER, resolve_required_scope
 from integrations.models import IntegrationToken
-from users.models import User
 
 # Bound how often a request writes ``last_used_at``. Every authenticated request
 # would otherwise write a row, which is the hot path for a scrobbling client.
@@ -29,7 +28,7 @@ def _touch_last_used(token: IntegrationToken) -> None:
 
 
 def authenticate_token(raw_token: str):
-    """Authenticate raw token against IntegrationToken or fallback to User.token."""
+    """Authenticate an API credential against scoped IntegrationToken records."""
     if not raw_token:
         msg = "Invalid token"
         raise AuthenticationFailed(msg)
@@ -40,20 +39,14 @@ def authenticate_token(raw_token: str):
             token_digest=token_digest
         )
     except IntegrationToken.DoesNotExist:
-        pass
-    else:
-        if not integration_token.is_valid():
-            msg = "Invalid token"
-            raise AuthenticationFailed(msg)
-        _touch_last_used(integration_token)
-        return (integration_token.user, integration_token)
-
-    try:
-        user = User.objects.get(token=raw_token)
-    except User.DoesNotExist:
         msg = "Invalid token"
         raise AuthenticationFailed(msg) from None
-    return (user, None)
+
+    if not integration_token.is_valid():
+        msg = "Invalid token"
+        raise AuthenticationFailed(msg)
+    _touch_last_used(integration_token)
+    return (integration_token.user, integration_token)
 
 
 class BearerAuthentication(BaseAuthentication):
@@ -78,7 +71,7 @@ class ListenBrainzTokenAuthentication(BaseAuthentication):
 
     Exists so ListenBrainz-compatible scrobble clients (Multi-Scrobbler,
     Navidrome, Pano Scrobbler, ...) can authenticate against the ingest
-    endpoints. Supports both IntegrationToken and legacy User.token.
+    endpoints with a scoped IntegrationToken.
     """
 
     keyword = "Token"
@@ -117,10 +110,10 @@ class APIKeyAuthentication(BaseAuthentication):
 class HasScope(BasePermission):
     """Enforce the scope map against the credential the request authenticated with.
 
-    Session logins and legacy ``User.token`` credentials carry no token object
-    (``request.auth is None``) and keep full access. A scoped ``IntegrationToken``
-    must hold the scope ``api.scopes`` maps to this view and method; an unmapped
-    endpoint is denied, so a new route cannot silently become reachable.
+    Session logins carry no token object (``request.auth is None``) and keep full
+    access. A scoped ``IntegrationToken`` must hold the scope ``api.scopes`` maps
+    to this view and method; an unmapped endpoint is denied, so a new route cannot
+    silently become reachable.
     """
 
     required_scope = None
