@@ -179,7 +179,7 @@ class ScopeEnforcementTests(FloppyApiTestCase):
         self.assertEqual(response.status_code, HTTP.OK)
 
     def test_token_rotation_is_denied_to_every_scoped_token(self):
-        """A scoped token must not be able to mint an unscoped one."""
+        """A scoped token must not be able to mint an account token."""
         _, raw = IntegrationToken.generate(
             user=self.user1,
             name="wildcard",
@@ -191,18 +191,28 @@ class ScopeEnforcementTests(FloppyApiTestCase):
         )
         self.assertEqual(response.status_code, HTTP.FORBIDDEN)
 
-    def test_token_rotation_still_works_for_the_legacy_token(self):
-        """The account token keeps full access, including rotation."""
+    def test_legacy_account_token_cannot_rotate_itself(self):
+        """A legacy account token is not accepted as an API credential."""
         response = self.client.post(
             "/api/v1/user/token/regenerate/",
-            **self.auth_headers,
+            **self.legacy_auth_headers,
         )
-        self.assertEqual(response.status_code, HTTP.OK)
+        self.assertEqual(response.status_code, HTTP.FORBIDDEN)
 
-    def test_legacy_token_keeps_full_access(self):
-        """Legacy User.token requests carry no scopes and are not restricted."""
-        response = self.client.get("/api/v1/collection/", **self.auth_headers)
+    def test_legacy_account_token_is_rejected_by_api(self):
+        """A webhook/calendar account token cannot be replayed against the API."""
+        response = self.client.get(
+            "/api/v1/collection/",
+            **self.legacy_auth_headers,
+        )
+        self.assertEqual(response.status_code, HTTP.FORBIDDEN)
+
+    def test_session_user_keeps_full_access(self):
+        """Interactive session authentication remains unrestricted by token scopes."""
+        self.client.force_authenticate(user=self.user1)
+        response = self.client.get("/api/v1/collection/")
         self.assertEqual(response.status_code, HTTP.OK)
+        self.client.force_authenticate(user=None)
 
     def test_default_preset_covers_the_tracking_flows(self):
         """A default-preset token can scrobble, resume, and change saved state."""
