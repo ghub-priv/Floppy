@@ -8,7 +8,6 @@ from django.utils.translation import gettext as _
 
 from app.models import Episode, MediaTypes
 
-
 register = template.Library()
 
 DERIVED_TV_RATINGS_VERSION = "1.1.0"
