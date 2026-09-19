@@ -545,18 +545,24 @@ class IntegrationTest(StaticLiveServerTestCase):
             end_date=datetime(2026, 3, 12, 14, 0, tzinfo=UTC),
         )
 
-        self.page.goto(
-            self.live_server_url
-            + reverse(
-                "media_details",
-                kwargs={
-                    "source": Sources.TMDB.value,
-                    "media_type": MediaTypes.MOVIE.value,
-                    "media_id": "238",
-                    "title": "test-movie",
-                },
-            ),
-        )
+        # The detail carousel is loaded asynchronously after initial navigation.
+        # Wait for that HTMX fragment before interacting with header actions so
+        # its late layout swap cannot race the split tracking menu in Playwright.
+        with self.page.expect_response(
+            lambda response: "fragment=carousel" in response.url,
+        ):
+            self.page.goto(
+                self.live_server_url
+                + reverse(
+                    "media_details",
+                    kwargs={
+                        "source": Sources.TMDB.value,
+                        "media_type": MediaTypes.MOVIE.value,
+                        "media_id": "238",
+                        "title": "test-movie",
+                    },
+                ),
+            )
 
         expect(self.page.get_by_role("main")).to_contain_text("Test Movie")
 
@@ -1293,4 +1299,4 @@ class IntegrationTest(StaticLiveServerTestCase):
             desktop_signal_box["x"] + desktop_signal_box["width"],
             desktop_row_box["x"] + desktop_row_box["width"],
         )
-        self.assertEqual(desktop_signal_box["height"], 16)
+        self.assertAlmostEqual(desktop_signal_box["height"], 16, delta=0.01)
