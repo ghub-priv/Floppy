@@ -1,7 +1,7 @@
 """Read-only TV and season ratings derived from episode ratings."""
 
 from collections.abc import Mapping
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 from django import template
 from django.utils.translation import gettext as _
