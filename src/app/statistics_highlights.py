@@ -253,28 +253,29 @@ def _get_today_history_entries(user, media_type_filter=None):
     return _select_history_entry_for_day(day_payload), selected_year
 
 
-def _get_today_release_entry(user, media_type_filter=None):
-    today = timezone.localdate()
-    active_types = list(getattr(user, "get_active_media_types", list)())
-    if not active_types:
-        active_types = list(MediaTypes.values)
-    include_podcasts = MediaTypes.PODCAST.value in active_types
-    active_types = [
-        media_type
-        for media_type in active_types
-        if media_type not in (MediaTypes.EPISODE.value, MediaTypes.PODCAST.value)
-    ]
-    if media_type_filter:
-        if media_type_filter == MediaTypes.TV.value:
-            allowed = _TV_FAMILY - {MediaTypes.EPISODE.value}
-        elif media_type_filter == MediaTypes.ANIME.value:
-            allowed = _ANIME_FAMILY
-        else:
-            allowed = {media_type_filter}
-        active_types = [mt for mt in active_types if mt in allowed]
-        include_podcasts = (
-            include_podcasts and media_type_filter == MediaTypes.PODCAST.value
-        )
+# The candidate scan is library-wide (no date index can narrow it to a
+# month/day), and one range aggregation asks for it once per media type. Keep
+# the handful of matching items for a few minutes so the ranges of a sync pass
+# share one scan instead of repeating it per range and per type.
+TODAY_RELEASE_CACHE_TIMEOUT = 60 * 5
+
+
+def _today_release_candidates(
+    user,
+    today,
+    active_types,
+    *,
+    include_episodes,
+    include_podcasts,
+):
+    key = (
+        f"stats:highlights:release:{user.id}:{today.isoformat()}:"
+        f"{','.join(sorted(active_types))}:{int(include_episodes)}:"
+        f"{int(include_podcasts)}"
+    )
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
 
     items_by_year = defaultdict(list)
     seen_item_ids = set()
@@ -312,7 +313,6 @@ def _get_today_release_entry(user, media_type_filter=None):
                 }
             )
 
-    include_episodes = not media_type_filter or media_type_filter == MediaTypes.TV.value
     Episode = apps.get_model("app", "Episode")
     episode_qs = (
         Episode.all_objects.filter(
@@ -438,6 +438,41 @@ def _get_today_release_entry(user, media_type_filter=None):
                 }
             )
 
+    cache.set(key, items_by_year, timeout=TODAY_RELEASE_CACHE_TIMEOUT)
+    return items_by_year
+
+
+def _get_today_release_entry(user, media_type_filter=None):
+    today = timezone.localdate()
+    active_types = list(getattr(user, "get_active_media_types", list)())
+    if not active_types:
+        active_types = list(MediaTypes.values)
+    include_podcasts = MediaTypes.PODCAST.value in active_types
+    active_types = [
+        media_type
+        for media_type in active_types
+        if media_type not in (MediaTypes.EPISODE.value, MediaTypes.PODCAST.value)
+    ]
+    if media_type_filter:
+        if media_type_filter == MediaTypes.TV.value:
+            allowed = _TV_FAMILY - {MediaTypes.EPISODE.value}
+        elif media_type_filter == MediaTypes.ANIME.value:
+            allowed = _ANIME_FAMILY
+        else:
+            allowed = {media_type_filter}
+        active_types = [mt for mt in active_types if mt in allowed]
+        include_podcasts = (
+            include_podcasts and media_type_filter == MediaTypes.PODCAST.value
+        )
+
+    include_episodes = not media_type_filter or media_type_filter == MediaTypes.TV.value
+    items_by_year = _today_release_candidates(
+        user,
+        today,
+        active_types,
+        include_episodes=include_episodes,
+        include_podcasts=include_podcasts,
+    )
     if not items_by_year:
         return None, None
 

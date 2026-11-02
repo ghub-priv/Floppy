@@ -131,6 +131,146 @@ class SqlAndScanAgreeTests(LibraryQueryTestCase):
         self.assertNotEqual(first, other)
 
 
+class LastWatchedSortTests(LibraryQueryTestCase):
+    """Last watched means recent activity, not only a completion date."""
+
+    def setUp(self):
+        """Create one old completion and one recently played entry."""
+        super().setUp()
+        completed_item = Item.objects.create(
+            media_id="last-watched-completed",
+            source=Sources.TMDB.value,
+            media_type=MOVIE,
+            title="Finished Long Ago",
+            image="https://example.com/i.jpg",
+        )
+        self.completed = self.track(
+            completed_item,
+            status=Status.COMPLETED.value,
+            end_date=self.now - timedelta(days=10),
+            progressed_at=self.now - timedelta(days=10),
+        )
+        active_item = Item.objects.create(
+            media_id="last-watched-active",
+            source=Sources.TMDB.value,
+            media_type=MOVIE,
+            title="Playing Now",
+            image="https://example.com/i.jpg",
+        )
+        self.active = self.track(
+            active_item,
+            status=Status.IN_PROGRESS.value,
+            end_date=None,
+            progressed_at=self.now,
+        )
+
+    def test_last_watched_orders_in_progress_by_progressed_at(self):
+        """A recently played in-progress item sorts above an older completion."""
+        items = self.run_query(
+            _query(sort=SortSpec("last_watched", "desc")),
+        ).items
+        self.assertEqual(
+            [item.pk for item in items],
+            [self.active.item_id, self.completed.item_id],
+        )
+
+    def test_duplicate_rows_use_the_latest_activity(self):
+        """An in-progress row wins over an older completed row for one item."""
+        item = Item.objects.create(
+            media_id="last-watched-repeated",
+            source=Sources.TMDB.value,
+            media_type=MOVIE,
+            title="Watched Again",
+            image="https://example.com/i.jpg",
+        )
+        self.track(
+            item,
+            status=Status.COMPLETED.value,
+            end_date=self.now - timedelta(days=20),
+            progressed_at=self.now - timedelta(days=20),
+        )
+        self.track(
+            item,
+            status=Status.IN_PROGRESS.value,
+            end_date=None,
+            progressed_at=self.now + timedelta(days=1),
+        )
+
+        items = self.run_query(
+            _query(sort=SortSpec("last_watched", "desc")),
+        ).items
+        self.assertEqual(items[0].pk, item.pk)
+
+    def _undated_completed(self):
+        item = Item.objects.create(
+            media_id="last-watched-undated",
+            source=Sources.TMDB.value,
+            media_type=MOVIE,
+            title="Logged Today Without Date",
+            image="https://example.com/i.jpg",
+        )
+        self.track(
+            item,
+            status=Status.COMPLETED.value,
+            end_date=None,
+            progressed_at=self.now,
+        )
+        return item
+
+    def test_undated_completion_does_not_count_as_recent(self):
+        """A completed item with no watch date sorts last, not first."""
+        undated = self._undated_completed()
+        for direction in ("desc", "asc"):
+            with self.subTest(direction=direction):
+                ids = [
+                    item.pk
+                    for item in self.run_query(
+                        _query(sort=SortSpec("last_watched", direction)),
+                    ).items
+                ]
+                self.assertEqual(ids[-1], undated.pk)
+        newest_first = [
+            item.pk
+            for item in self.run_query(
+                _query(sort=SortSpec("last_watched", "desc")),
+            ).items
+        ]
+        self.assertEqual(
+            newest_first,
+            [self.active.item_id, self.completed.item_id, undated.pk],
+        )
+
+    def test_later_edit_does_not_change_the_order(self):
+        """Touching a row after its watch does not move it."""
+        older = self.track(
+            Item.objects.create(
+                media_id="last-watched-edited",
+                source=Sources.TMDB.value,
+                media_type=MOVIE,
+                title="Edited Later",
+                image="https://example.com/i.jpg",
+            ),
+            status=Status.COMPLETED.value,
+            end_date=self.now - timedelta(days=30),
+            progressed_at=self.now - timedelta(days=30),
+        )
+        Movie.objects.filter(pk=older.pk).update(score=9)
+        ids = [
+            item.pk
+            for item in self.run_query(
+                _query(sort=SortSpec("last_watched", "desc")),
+            ).items
+        ]
+        self.assertEqual(ids[-1], older.item_id)
+
+    def test_end_date_stays_a_completion_sort(self):
+        """Custom lists keep the literal end date ordering."""
+        items = self.run_query(
+            _query(sort=SortSpec("end_date", "desc")),
+        ).items
+        self.assertEqual(items[0].pk, self.completed.item_id)
+
+
 class StatusSemanticsTests(LibraryQueryTestCase):
     """``latest`` follows the newest row; ``any`` accepts any row."""
 

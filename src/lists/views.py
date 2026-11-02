@@ -20,10 +20,11 @@ from app.columns import (
     resolve_default_column_config,
 )
 from app.library_query.adapters import filter_values_from_media_list_filters
+from app.library_query.alphabet import normalize_initial
 from app.library_query.spec import STATUS_MATCH_ANY
 from app.media_list_filters import parse_media_list_filters
 from app.media_list_views import MEDIA_LIST_NO_STATUS, MEDIA_LIST_NO_STATUS_LABEL
-from app.models import MediaTypes
+from app.models import Item, MediaTypes
 from app.providers import (
     services,  # noqa: F401 — kept so legacy test patches on lists.views.services still work
 )
@@ -32,8 +33,8 @@ from integrations import exports
 from lists import smart_rules
 from lists import tasks as list_tasks
 from lists.forms import CustomListForm
-from lists.models import CustomList
-from lists.tiers import MAX_TIERS
+from lists.models import CustomList, CustomListItem
+from lists.tiers import MAX_TIERS, TIER_BOARD_LIMIT
 from lists.views_helpers import (
     _adapt_list_items_for_table,
     _attach_kometa_episode_urls,
@@ -55,9 +56,6 @@ from users.models import (
 )
 
 logger = logging.getLogger(__name__)
-
-# A tier board shows every item on one page; past this it says so.
-TIER_BOARD_LIMIT = 300
 
 
 @login_not_required
@@ -124,6 +122,20 @@ def list_detail(request, list_reference):
         # Render current membership now; refresh it in the background so the
         # write-heavy sync never runs inside a GET request.
         list_tasks.schedule_smart_list_sync(custom_list)
+
+    if request.user.is_authenticated and custom_list.user_can_edit(request.user):
+        # Quick-add once filed searched podcasts under a second Item; fold
+        # those into the tracked show so status and removal work again.
+        from app.services.podcast_import import merge_stray_podcast_items
+
+        merge_stray_podcast_items(
+            Item.objects.filter(
+                customlistitem__custom_list=custom_list,
+                media_type=MediaTypes.PODCAST.value,
+                episode_number__isnull=True,
+                season_number__isnull=True,
+            ),
+        )
 
     # Determine if this is a public view (anonymous user viewing public list)
     can_edit = custom_list.user_can_edit(request.user)
@@ -227,14 +239,15 @@ def list_detail(request, list_reference):
         "direction": direction,
         "media_types": selected_media_types,
         "status_filter": status_filter,
-        "page": int(request.GET.get("page", 1)),
+        "page": helpers.get_page_number(request),
         "search_query": request.GET.get("q", ""),
     }
 
     is_tiers = layout == ListDetailLayoutChoices.TIERS
     # Build and filter base queryset
     items = custom_list.items.all()
-    total_items_count = items.count()
+    # Count memberships directly; counting ``items`` joins app_item for nothing.
+    total_items_count = CustomListItem.objects.filter(custom_list=custom_list).count()
     media_type_breakdown = _build_media_type_breakdown(custom_list)
 
     # Compute completion percentage (titles completed / total titles)
@@ -275,6 +288,10 @@ def list_detail(request, list_reference):
         custom_list=custom_list,
         media_user=media_user,
         candidates=items.values("pk"),
+        initial=request.GET.get("initial"),
+        title_user=request.user,
+        include_alphabet=not helpers.is_htmx_fragment(request),
+        media_types=filtered_media_types,
         filters=list_filters,
         # The Tiers view lists every tier on one board, in tier order.
         sort_by=ListDetailSortChoices.TIER if is_tiers else params["sort_by"],
@@ -320,6 +337,7 @@ def list_detail(request, list_reference):
         "user": request.user,
         "custom_list": custom_list,
         "items": items_page,
+        "alphabet_other_initial": items_page.alphabet_other_initial,
         "has_next": items_page.has_next(),
         "next_page_number": items_page.next_page_number()
         if items_page.has_next()
@@ -408,6 +426,9 @@ def list_detail(request, list_reference):
                     "maxTiers": MAX_TIERS,
                     "moveUrl": reverse("list_tier_move", args=[custom_list.id]),
                     "saveUrl": reverse("list_tier_save", args=[custom_list.id]),
+                    "canFill": can_edit and request.user.ratings_enabled,
+                    "fillUrl": reverse("list_tier_fill", args=[custom_list.id]),
+                    "undoUrl": reverse("list_tier_fill_undo", args=[custom_list.id]),
                 },
                 "tier_board_truncated": filtered_items_count
                 > len(items_page.object_list),
@@ -474,6 +495,8 @@ def list_detail(request, list_reference):
     else:
         template_name = "lists/components/media_grid.html"
 
+    if normalize_initial(request.GET.get("initial")) and not items_page and not is_pagination:
+        template_name = "app/components/alphabet_results_empty.html"
     response = render(request, template_name, context)
     response["HX-Trigger"] = json.dumps(
         _build_list_count_trigger(total_items_count),

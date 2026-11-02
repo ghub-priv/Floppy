@@ -53,6 +53,10 @@ _FILE_IMPORTS = {
     "goodreads": ("import_goodreads", "Goodreads CSV"),
     "hardcover": ("import_hardcover", "Hardcover CSV"),
     "storygraph": ("import_storygraph", "StoryGraph CSV"),
+    "youtube-takeout": (
+        "import_youtube_takeout",
+        "YouTube Takeout watch history (JSON or zip)",
+    ),
 }
 
 
@@ -82,7 +86,7 @@ class ImportDispatchView(drf_views.APIView):
     Username services (mal, anilist, kitsu, steam) take {"username", "mode"}.
     Token services (mangabaka) take {"token", "mode"} and never a username.
     File services (yamtrack, trakt-collection, trakt-export, hltb, grouvee,
-    imdb, goodreads, hardcover, storygraph) take a multipart upload in the
+    imdb, goodreads, hardcover, storygraph, youtube-takeout) take a multipart upload in the
     "file" field plus an optional "mode". Returns 202 with a task_id pollable at
     /api/v1/tasks/{task_id}. Recurring schedules stay web-only.
     """

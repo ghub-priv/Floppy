@@ -26,8 +26,8 @@ from functools import reduce
 from operator import and_, or_
 from typing import TYPE_CHECKING
 
-from django.db.models import Exists, OuterRef, Q, Subquery
-from django.db.models.functions import Coalesce
+from django.db.models import CharField, Exists, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce, Concat
 from django.db.models.lookups import (
     GreaterThanOrEqual,
     In,
@@ -35,6 +35,7 @@ from django.db.models.lookups import (
     LessThanOrEqual,
 )
 
+from app.library_query.alphabet import initial_condition, normalize_initial
 from app.library_query.spec import STATUS_MATCH_ANY, STATUS_MATCH_LATEST, FilterValues
 from app.models.choices import MediaTypes, Status
 from app.models.discovery import CollectionEntry, ItemTag
@@ -374,22 +375,33 @@ def shows_with_collected_episodes(user):
     the collected episodes' ids before the exact (media id, source) pair is
     checked, so no other user's items are visited.
     """
-    collected_episodes = CollectionEntry.objects.filter(
-        user=user,
-        item__media_type=MediaTypes.EPISODE.value,
+    # Keep SQLite on the owner's collection index. A bare item media_type
+    # predicate picks the catalogue type index and probes the collection once
+    # per episode in the entire database (even for a small collection).
+    collected_episodes = (
+        CollectionEntry.objects.filter(user=user)
+        .alias(_collection_media_type=Concat("item__media_type", Value("")))
+        .filter(_collection_media_type=MediaTypes.EPISODE.value)
     )
+    # One non-correlated pair set: SQLite evaluates it once. A correlated
+    # Exists here re-walks the collected episodes per candidate (143 s on a
+    # 100k-episode collection, 0.1 s as a set).
+    pair = Concat("media_id", Value("\x1f"), "source", output_field=CharField())
     return (
         Item.objects.filter(
             media_type__in=SHOW_COLLECTION_MEDIA_TYPES,
             media_id__in=collected_episodes.values("item__media_id"),
         )
+        .annotate(_show_pair=pair)
         .filter(
-            Exists(
-                collected_episodes.filter(
-                    item__media_id=OuterRef("media_id"),
-                    item__source=OuterRef("source"),
+            _show_pair__in=collected_episodes.annotate(
+                _pair=Concat(
+                    "item__media_id",
+                    Value("\x1f"),
+                    "item__source",
+                    output_field=CharField(),
                 ),
-            ),
+            ).values("_pair"),
         )
         .values("pk")
     )
@@ -564,7 +576,14 @@ FILTERS: tuple[FilterDef, ...] = (
         "search",
         _text("search"),
         sql=lambda v, ctx: Q(title__icontains=v.search.strip())
+        | Q(original_title__icontains=v.search.strip())
+        | Q(localized_title__icontains=v.search.strip())
         | Q(media_id__icontains=v.search.strip()),
+    ),
+    FilterDef(
+        "initial",
+        lambda v: bool(normalize_initial(v.initial)),
+        sql=lambda v, ctx: initial_condition(v.initial, ctx.user),
     ),
     FilterDef("rating", _rating_active, sql=_rating_sql),
     FilterDef(

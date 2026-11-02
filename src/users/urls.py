@@ -1,9 +1,22 @@
 from django.urls import path
 
-from users import metadata_views, onboarding_views, server_port_views, views
+from users import (
+    metadata_views,
+    onboarding_views,
+    provider_views,
+    server_port_views,
+    views,
+)
 
 urlpatterns = [
+    path("settings/providers", provider_views.providers, name="providers"),
+    path("settings/providers/pin", provider_views.pin_provider, name="pin_settings_provider"),
+    path("settings/activity", provider_views.activity, name="provider_activity"),
+    path("settings/data", provider_views.data_management, name="data_management"),
+    path("settings/access", provider_views.access_tokens, name="access_tokens"),
+    path("settings/providers/<slug:slug>", provider_views.provider_detail, name="provider_detail"),
     path("setup/", onboarding_views.onboarding_media_types, name="onboarding_media_types"),
+    path("setup/metadata/", onboarding_views.onboarding_metadata, name="onboarding_metadata"),
     path(
         "setup/services/<int:index>/",
         onboarding_views.onboarding_services,
@@ -101,7 +114,12 @@ urlpatterns = [
         views.convert_tv_library,
         name="convert_tv_library",
     ),
-    path("settings/integrations", views.integrations, name="integrations"),
+    path(
+        "settings/metadata/repair-duplicate-anime",
+        views.repair_duplicate_anime_libraries,
+        name="repair_duplicate_anime_libraries",
+    ),
+    path("settings/integrations", provider_views.legacy_settings, {"section": "integrations"}, name="integrations"),
     path(
         "settings/integrations/stremio-catalog-status",
         views.stremio_catalog_status,
@@ -110,7 +128,8 @@ urlpatterns = [
     path("settings/rss", views.rss_settings, name="rss_settings"),
     path(
         "settings/metadata",
-        metadata_views.metadata_settings,
+        provider_views.legacy_settings,
+        {"section": "metadata"},
         name="metadata_settings",
     ),
     path(
@@ -133,7 +152,7 @@ urlpatterns = [
         metadata_views.set_media_type_provider,
         name="set_media_type_provider",
     ),
-    path("settings/import", views.import_data, name="import_data"),
+    path("settings/import", provider_views.legacy_settings, {"section": "import"}, name="import_data"),
     path(
         "settings/import/save-settings",
         views.save_import_settings,
@@ -154,7 +173,8 @@ urlpatterns = [
         views.import_data_plex_sections,
         name="import_data_plex_sections",
     ),
-    path("settings/export", views.export_data, name="export_data"),
+    path("settings/export", provider_views.legacy_settings, {"section": "export"}, name="export_data"),
+    path("settings/export/mal", provider_views.legacy_settings, {"section": "sync"}, name="mal_export"),
     path("settings/advanced", views.advanced, name="advanced"),
     path(
         "settings/advanced/image-cache",
@@ -173,6 +193,7 @@ urlpatterns = [
         name="update_server_port",
     ),
     path("settings/about", views.about, name="about"),
+    path("settings/about/whats-new", views.whats_new, name="whats_new"),
     path(
         "delete_import_schedule",
         views.delete_import_schedule,
@@ -286,6 +307,11 @@ urlpatterns = [
         "update_jellyfin_webhook_events",
         views.update_jellyfin_webhook_events,
         name="update_jellyfin_webhook_events",
+    ),
+    path(
+        "update_group_scrobbled_anime",
+        views.update_group_scrobbled_anime,
+        name="update_group_scrobbled_anime",
     ),
     # kept: URL path/name unchanged, matches views.py route (see plan)
     path(

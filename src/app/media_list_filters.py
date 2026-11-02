@@ -52,6 +52,7 @@ MEDIA_LIST_SORTS = {
     "id",
     "ended",
     "started",
+    "last_watched",
 }
 MEDIA_LIST_SORT_DEFAULTS_ASC = {
     "author",
@@ -98,6 +99,8 @@ class MediaListFilters:
     statuses: tuple[str, ...] = ()
     include_no_status: bool = False
     search: str = ""
+    # Web-only view state; not parsed from API requests or saved as smart rules.
+    initial: str = ""
     rating: str = "all"
     rating_min: str = ""
     rating_max: str = ""
@@ -759,11 +762,12 @@ def _next_episode_for_media(media):
                         "season_number": season_number,
                         "episode_number": episode_number,
                         "air_date": _episode_air_date(season, episode_number),
+                        "is_rewatch": season.is_rewatching,
                     },
                     item,
                     media,
                 )
-        from events.models import Event
+        from events.models import Event, released_q
 
         untracked_events = (
             Event.objects.filter(
@@ -771,8 +775,8 @@ def _next_episode_for_media(media):
                 item__media_id=item.media_id,
                 item__source=item.source,
                 content_number__isnull=False,
-                datetime__lte=timezone.now(),
             )
+            .filter(released_q("datetime", timezone.now()))
             .exclude(item__season_number=0)
             .exclude(item__season_number__in=excluded_season_numbers)
             .order_by("item__season_number", "content_number", "datetime")
@@ -784,6 +788,7 @@ def _next_episode_for_media(media):
                     "season_number": event.item.season_number,
                     "episode_number": event.content_number,
                     "air_date": event.datetime,
+                    "is_rewatch": False,
                 },
                 item,
                 media,
@@ -798,20 +803,21 @@ def _next_episode_for_media(media):
                 "season_number": getattr(item, "season_number", None),
                 "episode_number": episode_number,
                 "air_date": _episode_air_date(media, episode_number),
+                "is_rewatch": media.is_rewatching,
             },
             item,
             media,
         )
     if media_type == MediaTypes.ANIME.value:
-        from events.models import Event
+        from events.models import Event, released_q
 
         progress = int(getattr(media, "progress", 0) or 0)
         event = (
             Event.objects.filter(
                 item=item,
                 content_number__gt=progress,
-                datetime__lte=timezone.now(),
             )
+            .filter(released_q("datetime", timezone.now()))
             .exclude(datetime__year__lt=1900)
             .order_by("content_number", "datetime")
             .first()
@@ -822,6 +828,7 @@ def _next_episode_for_media(media):
                     "season_number": None,
                     "episode_number": event.content_number,
                     "air_date": event.datetime,
+                    "is_rewatch": False,
                 },
                 item,
                 media,
@@ -857,7 +864,7 @@ def _sort_value(entry, sort, next_episode):
     if sort in {"release_date", "release_datetime"}:
         return getattr(item, "release_datetime", None)
     if sort in {"date_added", "added", "created_at"}:
-        return getattr(media, "created_at", None)
+        return getattr(media, "aggregated_created_at", None) or getattr(media, "created_at", None)
     if sort in {"start_date", "started"}:
         return getattr(media, "aggregated_start_date", None) or getattr(
             media, "start_date", None
@@ -865,6 +872,12 @@ def _sort_value(entry, sort, next_episode):
     if sort in {"end_date", "ended"}:
         return getattr(media, "aggregated_end_date", None) or getattr(
             media, "end_date", None
+        )
+    if sort == "last_watched":
+        return (
+            getattr(media, "aggregated_last_watched", None)
+            or getattr(media, "end_date", None)
+            or helpers.progress_activity(media)
         )
     if sort in {"updated", "progressed_at"}:
         return getattr(media, "progressed_at", None)
@@ -900,6 +913,24 @@ def media_list_media_types(filters: MediaListFilters, media_type) -> tuple[str, 
     )
 
 
+def attach_card_collection_platforms(user, items):
+    """Attach the owner's collected platforms to a bounded set of game items."""
+    from app.models import CollectionEntry
+
+    games = [item for item in items if item.media_type == MediaTypes.GAME.value and item.pk]
+    if not games:
+        return
+    platforms = {}
+    for item_id, value in CollectionEntry.objects.filter(
+        user=user, item_id__in=[item.pk for item in games]
+    ).values_list("item_id", "resolution"):
+        platform = value.strip()
+        if platform:
+            platforms.setdefault(item_id, set()).add(platform)
+    for item in games:
+        item.card_collection_platforms = sorted(platforms.get(item.pk, ()), key=str.lower)
+
+
 def media_list_entries_for_items(user, items) -> list[MediaListEntry]:
     """Attach each item's tracker row for a page of items.
 
@@ -927,13 +958,15 @@ def media_list_entries_for_items(user, items) -> list[MediaListEntry]:
             owner = {"user": user}
             related = ("item",)
         rows = model.objects.filter(item_id__in=item_ids, **owner).select_related(*related)
-        rows = list(BasicMedia.objects._apply_prefetch_related(rows, media_type, list_mode=True, compact_episodes=True))
+        rows = rows.defer(*(f"{relation}__watch_providers" for relation in related if relation.endswith("item")))
+        rows = list(BasicMedia.objects._apply_prefetch_related(rows, media_type, list_mode=True, compact_episodes=True, light_rows=True))
         if media_type != MediaTypes.EPISODE.value:
             BasicMedia.objects._aggregate_duplicate_data(rows, user, media_type)
         for media in sorted(rows, key=lambda row: (row.created_at, row.pk)):
             media_by_item_id[media.item_id] = media
     # A tracked entry keeps its row's own item: the prefetches (events, tags)
-    # hang off that instance.
+    # hang off that instance. Generic/API hydration must not query CollectionEntry
+    # for card decoration; HTML surfaces attach platforms from page context (#1004).
     return [
         MediaListEntry(
             item=media.item if media is not None else item,

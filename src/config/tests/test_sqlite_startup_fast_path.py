@@ -204,7 +204,7 @@ class RecentVerificationTests(_Base):
         self.assertIn("open check failed", output)
 
     @requires_linux
-    def test_a_verified_snapshot_vouches_for_the_live_file(self):
+    def test_a_structural_snapshot_does_not_vouch_for_relationships(self):
         backups = Path(self.db_path).parent / "backups"
 
         snapshot = sqlite_integrity.create_live_database_snapshot(
@@ -216,9 +216,8 @@ class RecentVerificationTests(_Base):
 
         self.assertIsNotNone(snapshot)
         record, reason = self.recent_verification()
-        self.assertIsNotNone(record)
-        self.assertEqual(record["source"], "snapshot")
-        self.assertIn("verified by snapshot", reason)
+        self.assertIsNone(record)
+        self.assertIn("does not verify relationships", reason)
 
 
 class WarmCacheTests(_Base):

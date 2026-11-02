@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from integrations.models import DEFAULT_INTEGRATION_SCOPES
-
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -17,13 +15,17 @@ OAUTH_SCOPE_OPTIONS = (
     ("watchlist:write", "Library State Write", "Change tracked library state and collections."),
     ("scrobble:write", "Scrobble Write", "Submit playback and ListenBrainz events."),
     ("sync:read", "Sync Read", "Read sync connections, change feeds and conflicts."),
+    ("lists:read", "Lists Read", "Read your lists, their items and collaborators."),
+    ("lists:write", "Lists Write", "Create, change and delete your lists and their items."),
 )
 
 OAUTH_SCOPE_INFO = {
     scope: {"label": label, "description": description}
     for scope, label, description in OAUTH_SCOPE_OPTIONS
 }
-OAUTH_ALLOWED_SCOPES = frozenset(DEFAULT_INTEGRATION_SCOPES)
+# Every scope a public client may be granted. The tracking preset
+# (DEFAULT_INTEGRATION_SCOPES) stays what a client gets when it names none.
+OAUTH_ALLOWED_SCOPES = frozenset(scope for scope, _label, _description in OAUTH_SCOPE_OPTIONS)
 
 
 def normalise_scopes(scopes: str | Iterable[str] | None, *, default: Iterable[str] = ()) -> list[str]:

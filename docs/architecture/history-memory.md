@@ -204,6 +204,15 @@ dictionaries rather than O(response).
 
 ## Measuring it
 
+Metadata language repair retains History caches when provider responses leave
+`title`, `original_title`, and `localized_title` unchanged. Synopsis is not stored
+in History cards. A changed title invalidates both History styles for every
+tracking owner of the repaired item, once per batch, and requests the existing
+default-style refresh. Earlier title writes are flushed even when a later fetch
+fails or a preference reset ends the batch. Language agreement, the second
+post-fetch preference check, cursor/backoff, and bulk continuation routing remain
+unchanged. Regressions live in `app.tests.test_metadata_language_repair`.
+
 `scripts/history_request_memory.py` runs inside the disposable benchmark
 container and reports the serving worker's RSS/PSS/private/anonymous around a
 request, with the response hash beside it so a candidate can be compared on

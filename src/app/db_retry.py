@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 from django.db import models, transaction
 from django.db.utils import IntegrityError, OperationalError
 
+from app import db_diagnostics
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -97,6 +99,8 @@ def run_retryable_db_operation(
         except OperationalError as error:
             if not is_retryable_error(error):
                 raise
+
+            db_diagnostics.report_database_error(error, operation=operation_name)
 
             if attempt >= max_retries:
                 if mode != "best_effort":

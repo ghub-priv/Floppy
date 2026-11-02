@@ -161,6 +161,11 @@ class ItemSerializer(serializers.ModelSerializer):
         exclude = ("id", "provider_episode_count")
 
 
+# One shared instance: building a ModelSerializer's fields costs ~5 ms, and
+# every per-row payload used to pay it again for each item it serialized.
+_ITEM_SERIALIZER = ItemSerializer()
+
+
 class ChangesHistoryEntrySerializer(serializers.Serializer):
     """Serializer that builds a change-based history entry."""
 
@@ -568,7 +573,7 @@ class EpisodeSerializer(serializers.ModelSerializer):
             return {
                 "id": item.id if item is not None else None,
                 "consumption_id": instance.id,
-                "item": ItemSerializer().to_representation(item)
+                "item": _ITEM_SERIALIZER.to_representation(item)
                 if item is not None
                 else None,
                 "item_id": ItemIdField().to_representation(item)
@@ -652,7 +657,7 @@ class EpisodeSerializer(serializers.ModelSerializer):
                 lists_by_item_id = context.get("lists_by_item_id", {})
                 lists = lists_by_item_id.get(item.id, [])
 
-        serialized_item = ItemSerializer().to_representation(item) if item else None
+        serialized_item = _ITEM_SERIALIZER.to_representation(item) if item else None
         if serialized_item is not None:
             serialized_item["title"] = instance.get("name") or serialized_item["title"]
             if not serialized_item.get("release_datetime") and instance.get(
@@ -948,7 +953,7 @@ class MediaSerializer(serializers.ModelSerializer):
         return {
             "id": item.id if item is not None else None,
             "consumption_id": instance.id,
-            "item": serialize_data(item, serializer_class=ItemSerializer)
+            "item": _ITEM_SERIALIZER.to_representation(item)
             if item is not None
             else None,
             "item_id": ItemIdField().to_representation(item)
@@ -1031,7 +1036,7 @@ class UntrackedMediaSerializer(serializers.Serializer):
         return {
             "id": instance.id,
             "consumption_id": None,
-            "item": ItemSerializer().to_representation(instance),
+            "item": _ITEM_SERIALIZER.to_representation(instance),
             "item_id": ItemIdField().to_representation(instance),
             "parent_id": ParentIdField().to_representation(instance),
             "tracked": False,

@@ -300,8 +300,146 @@ class PersonDetailViewTests(TestCase):
         self.assertContains(response, "Tracked Movie")
         self.assertContains(response, "Other Show")
         self.assertContains(response, "?person_source=tmdb&amp;person_id=123")
-        self.assertContains(response, "media-card-subtitle-always")
+        self.assertContains(response, "media-card-line-dormant")
+        # Tracked and untracked credits both get the shared card's hover actions;
+        # only the tracked one has the viewer's status chip (#1534).
+        self.assertContains(response, 'class="media-card-overlay', count=3)
+        self.assertContains(response, 'class="media-status-chip', count=2)
         self.assertNotContains(response, "Tracked Titles")
+
+    @patch("app.providers.tmdb.person")
+    def test_watched_content_includes_completed_titles_without_end_date(
+        self, mock_person
+    ):
+        """A completed title counts as watched even with no recorded end date.
+
+        Filmography already reads the tracking row's completed status; the
+        watched shelf must not use the end date as its watched criterion.
+        """
+        movie_item = Item.objects.create(
+            media_id="601",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Undated Movie",
+            image="http://example.com/undated-movie.jpg",
+        )
+        ItemPersonCredit.objects.create(
+            item=movie_item,
+            person=self.person,
+            role_type=CreditRoleType.CAST.value,
+            role="Lead",
+        )
+        Movie.objects.create(
+            item=movie_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+        )
+
+        show_item = Item.objects.create(
+            media_id="602",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Undated Show",
+            image="http://example.com/undated-show.jpg",
+        )
+        show = TV.objects.create(
+            item=show_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+        )
+        ItemPersonCredit.objects.create(
+            item=show_item,
+            person=self.person,
+            role_type=CreditRoleType.CAST.value,
+            role="Lead",
+        )
+        season_item = Item.objects.create(
+            media_id="602",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            title="Undated Show",
+            image="http://example.com/undated-season.jpg",
+            season_number=1,
+        )
+        season = Season.objects.create(
+            item=season_item,
+            user=self.user,
+            related_tv=show,
+            status=Status.COMPLETED.value,
+        )
+        episode_item = Item.objects.create(
+            media_id="602",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            title="Undated Episode",
+            image="http://example.com/undated-episode.jpg",
+            season_number=1,
+            episode_number=1,
+        )
+        Episode.objects.create(
+            item=episode_item,
+            related_season=season,
+            status=Status.COMPLETED.value,
+        )
+
+        mock_person.return_value = {
+            "person_id": "123",
+            "source": Sources.TMDB.value,
+            "name": "Jane Star",
+            "image": "http://example.com/jane.jpg",
+            "biography": "",
+            "known_for_department": "Acting",
+            "gender": "female",
+            "birth_date": "1990-01-01",
+            "death_date": None,
+            "place_of_birth": "Los Angeles",
+            "filmography": [
+                {
+                    "media_id": "601",
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "title": "Undated Movie",
+                    "image": "http://example.com/undated-movie.jpg",
+                    "year": 2024,
+                    "credit_type": "cast",
+                    "role": "Lead",
+                    "department": "Acting",
+                },
+                {
+                    "media_id": "602",
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.TV.value,
+                    "title": "Undated Show",
+                    "image": "http://example.com/undated-show.jpg",
+                    "year": 2024,
+                    "credit_type": "cast",
+                    "role": "Lead",
+                    "department": "Acting",
+                },
+            ],
+        }
+
+        response = self.client.get(
+            reverse(
+                "person_detail",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "person_id": "123",
+                    "name": "jane-star",
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["watched_movie_count"], 1)
+        self.assertEqual(response.context["watched_show_count"], 1)
+        self.assertEqual(
+            {entry["title"] for entry in response.context["watched_filmography"]},
+            {"Undated Movie", "Undated Show"},
+        )
+        self.assertTrue(
+            all(entry["is_watched"] for entry in response.context["filmography"])
+        )
 
     @patch("app.providers.tmdb.person")
     def test_person_detail_dates_respect_user_preference(self, mock_person):

@@ -11,7 +11,7 @@
         <p class="mt-2 text-sm font-semibold text-[var(--color-text)]">{{ media.item.provider_rating|floatformat:1 }}/10</p>
       {% endif %}
     {% elif current_sort == 'end_date' %}
-      {% with end_date=media|safe_attr:"aggregated_end_date"|default_if_none:media.end_date %}
+      {% with end_date=media|safe_attr:"aggregated_last_watched"|default_if_none:media.end_date|default_if_none:media.progressed_at %}
         {% if end_date %}
           <p class="mt-2 text-sm font-semibold text-[var(--color-text)]">{{ end_date|user_date_format:user }}</p>
         {% endif %}

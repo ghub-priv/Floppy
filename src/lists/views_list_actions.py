@@ -33,10 +33,11 @@ from app.library_query.adapters import (
     SMART_RULES_CURRENT_SEMANTICS,
     SMART_RULES_SEMANTICS_KEY,
 )
-from app.models import Item, MediaTypes, Status
+from app.models import Item, MediaTypes, Sources, Status
 from app.providers import services
 from app.redis_diagnosis import queue_failure_message
 from app.services import metadata_resolution
+from app.services import music as music_services
 from app.templatetags.app_tags import media_type_readable_plural
 from integrations.upload_staging import (
     enqueue_staged_task,
@@ -56,6 +57,7 @@ from lists.views_helpers import (
     _build_list_url_template,
     _list_item_title_fields_from_metadata,
     _maybe_backfill_episode_title,
+    list_metadata_language,
 )
 from users.models import ListDetailSortChoices, MediaSortChoices
 
@@ -270,6 +272,9 @@ def edit(request):
                 user=request.user,
                 activity_type=ListActivityType.LIST_EDITED,
             )
+        else:
+            logger.error(form.errors.as_json())
+            helpers.form_error_messages(form, request)
     else:
         messages.error(
             request, gettext("You do not have permission to edit this list.")
@@ -309,6 +314,8 @@ def edit_form(request, list_id):
             "form": form,
             "custom_list": custom_list,
             "list_url_template": _build_list_url_template(request),
+            # request.path is this fragment's URL, not the page hosting the modal.
+            "next_url": reverse("lists"),
         },
     )
 
@@ -381,6 +388,12 @@ def lists_modal(
         media_type,
         source=source,
     )
+    if tracking_media_type == MediaTypes.PODCAST.value:
+        from app.services.podcast_import import resolve_show_for_media_id
+
+        show = resolve_show_for_media_id(media_id, source=source)
+        if show is not None:
+            media_id = show.podcast_uuid
     lookup = {
         "media_id": media_id,
         "source": source,
@@ -393,17 +406,38 @@ def lists_modal(
 
     try:
         item = Item.objects.get(**lookup)
-        _maybe_backfill_episode_title(item, force=True)
+        with services.interactive_request_scope():
+            _maybe_backfill_episode_title(
+                item,
+                force=True,
+                language=list_metadata_language(request.user),
+            )
     except Item.MultipleObjectsReturned:
         item = Item.objects.filter(**lookup).first()
     except Item.DoesNotExist:
-        metadata = services.get_media_metadata(
-            media_type,
-            media_id,
-            source,
-            [season_number],
-            episode_number,
+        # An album page's id is not a MusicBrainz recording, so the provider
+        # cannot describe it; the album row we already hold can.
+        album = (
+            music_services.album_for_media_id(media_id, user=request.user)
+            if tracking_media_type == MediaTypes.MUSIC.value
+            and source == Sources.MUSICBRAINZ.value
+            else None
         )
+        if album:
+            metadata = {
+                "title": album.title,
+                "image": album.image or settings.IMG_NONE,
+            }
+        else:
+            with services.interactive_request_scope():
+                metadata = services.get_media_metadata(
+                    media_type,
+                    media_id,
+                    source,
+                    [season_number],
+                    episode_number,
+                    language=list_metadata_language(request.user),
+                )
         item = Item.objects.create(
             media_id=media_id,
             source=source,

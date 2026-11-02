@@ -24,6 +24,7 @@ from django_celery_results.models import TaskResult
 from app import credits as credit_helpers
 from app import history_cache, statistics_cache
 from app.discover import tab_cache as discover_tab_cache
+from app.history_entry_builders import flat_anime_episode_watches
 from app.models import (
     TV,
     AlbumTracker,
@@ -53,10 +54,10 @@ from app.models import (
     PodcastShowTracker,
     Season,
     Sources,
+    Status,
     VideoPlay,
 )
 from lists.models import CustomList, CustomListItem
-from lists.smart_rules import sync_smart_lists_for_item
 
 logger = logging.getLogger(__name__)
 
@@ -68,69 +69,28 @@ def fence_overwrite_tracking_writes(sender, instance, **kwargs):
     """Cooperate with a durable replacement before mutating its original scope."""
     from integrations.import_scope import TRACKING_MODELS, guard_instances
 
-    if (not kwargs.get("raw") and instance._meta.apps is apps
-            and instance._meta.app_label == "app" and instance._meta.model_name in TRACKING_MODELS):
+    if (
+        not kwargs.get("raw")
+        and instance._meta.apps is apps
+        and instance._meta.app_label == "app"
+        and instance._meta.model_name in TRACKING_MODELS
+    ):
         guard_instances([instance])
+
 
 RUNTIME_BACKFILL_SOURCES = ("tmdb", "tvdb", "mal", "simkl")
 GENRE_BACKFILL_SOURCES = ("tmdb", "tvdb", "mal", "simkl", "igdb", "bgg")
+# Non-import tasks with user-facing results. Import tasks are tracked by their
+# Celery name so a new importer does not need a second registration here.
 TRACKED_TASK_NAMES = frozenset(
     {
-        "Import from Trakt",
-        "Import Trakt data export",
-        "Import Trakt collection CSV",
-        "Import from SIMKL",
-        "Import from MyAnimeList",
-        "Import from AniList",
-        "Import from Kitsu",
-        "Import from MangaBaka",
-        "Import from Yamtrack",
-        "Import from HowLongToBeat",
-        "Import from Grouvee",
-        "Import from Steam",
-        "Import from Xbox",
-        "Import from Xbox (Recurring)",
-        "Import from PSN",
-        "Import from PSN (Recurring)",
-        "Import from IMDB",
-        "Import from Goodreads",
-        "Import from GoodReads",
         "integrations.tasks.import_goodreads",
-        "Import from MDBList",
-        "Import MDBList Lists",
-        "Import from Plex",
         "Sync Plex Watchlist",
         "Sync Plex Watched Marks",
-        "Import from Radarr",
-        "Import from Radarr (Recurring)",
-        "Import from Sonarr",
-        "Import from Sonarr (Recurring)",
-        "Import from Mylar3",
-        "Import from Mylar3 (Recurring)",
-        "Import from Kapowarr",
-        "Import from Kapowarr (Recurring)",
-        "Import from Audiobookshelf",
-        "Import from Audiobookshelf (Recurring)",
-        "Import from Kavita",
-        "Import from Kavita (Recurring)",
-        "Import from Komga",
-        "Import from Komga (Recurring)",
-        "Import from Storyteller",
-        "Import from Storyteller (Recurring)",
-        "Import from Pocket Casts",
-        "Import from Pocket Casts (Recurring)",
-        "Import from GPodder",
-        "Import from GPodder (Recurring)",
-        "Import from Stremio",
-        "Import from Stremio (Recurring)",
-        "Import from Last.fm History",
-        "Import from Hardcover",
-        "Import from Hardcover Account",
-        "Import from StoryGraph",
-        "Import from Koito History",
         "Scheduled backup export",
         "Bulk Episode Plays",
         "Bulk Music Plays",
+        "Bulk Consumption Batch",
     },
 )
 DISCOVER_PRIORITY_HISTORY_DEBOUNCE_SECONDS = 15
@@ -141,6 +101,14 @@ _SUPPRESS_MEDIA_CACHE_CHANGE_SIGNALS: ContextVar[bool] = ContextVar(
 )
 _SUPPRESS_MEDIA_CHANGE_SIDE_EFFECTS: ContextVar[bool] = ContextVar(
     "suppress_media_change_side_effects",
+    default=False,
+)
+_IMPORTER_REPLACING_ROWS: ContextVar[bool] = ContextVar(
+    "importer_replacing_rows",
+    default=False,
+)
+_ACCOUNT_BEING_DELETED: ContextVar[bool] = ContextVar(
+    "account_being_deleted",
     default=False,
 )
 
@@ -170,6 +138,39 @@ def suppress_media_change_side_effects():
         _SUPPRESS_MEDIA_CHANGE_SIDE_EFFECTS.reset(token)
 
 
+@contextmanager
+def importer_replacing_rows():
+    """Mark deletes inside the block as an import replacing rows.
+
+    An overwrite import deletes a tracked show and writes it back. That is not
+    the user deleting it, so it must not leave a deletion tombstone: the
+    tombstone would make every later sync skip a show the user still tracks.
+    """
+    token = _IMPORTER_REPLACING_ROWS.set(True)
+    try:
+        yield
+    finally:
+        _IMPORTER_REPLACING_ROWS.reset(token)
+
+
+@contextmanager
+def deleting_account():
+    """Mark deletes inside the block as a whole account being removed.
+
+    The cascade removes every tracked row with the user. A deletion tombstone
+    or statistics marker written for each one would point at the user
+    mid-delete and break the delete on its foreign key.
+    """
+    token = _ACCOUNT_BEING_DELETED.set(True)
+    try:
+        # Statistics, history and cache refresh signals would also write rows
+        # for the user that is being removed.
+        with suppress_media_cache_change_signals(), suppress_media_change_side_effects():
+            yield
+    finally:
+        _ACCOUNT_BEING_DELETED.reset(token)
+
+
 def media_change_side_effects_suppressed() -> bool:
     """Return whether media-row side effects are suppressed for the current context."""
     return bool(_SUPPRESS_MEDIA_CHANGE_SIDE_EFFECTS.get())
@@ -177,7 +178,10 @@ def media_change_side_effects_suppressed() -> bool:
 
 def _is_tracked_task(task_name):
     """Return whether a task needs durable status for a user-facing consumer."""
-    return task_name in TRACKED_TASK_NAMES
+    return bool(
+        task_name
+        and (task_name.startswith("Import ") or task_name in TRACKED_TASK_NAMES)
+    )
 
 
 def _sender_task_name(sender):
@@ -291,25 +295,28 @@ def update_task_result_on_failure(
 
 
 def _sync_owner_smart_lists_for_items(owner, items):
-    """Sync smart-list membership for a deduped set of owner items."""
+    """Sync smart-list membership for a deduped set of owner items.
+
+    Evaluating a smart list's rules scans the owner's library (seconds on a
+    large one), so a request only checks whether the owner has smart lists and
+    queues the evaluation on the default queue once the write commits.
+    """
     if not owner:
         return
 
-    seen_item_ids = set()
-    for item in items:
-        if not item:
-            continue
-        if item.id in seen_item_ids:
-            continue
-        seen_item_ids.add(item.id)
-        try:
-            sync_smart_lists_for_item(owner=owner, item=item)
-        except Exception:
-            logger.exception(
-                "Failed incremental smart-list sync for owner_id=%s item_id=%s",
-                owner.id,
-                item.id,
-            )
+    if not CustomList.objects.filter(owner=owner, is_smart=True).exists():
+        return
+    item_ids = list({item.id for item in items if item and item.id})
+    if not item_ids:
+        return
+    from lists.tasks import sync_smart_lists_for_items_task
+
+    if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
+        sync_smart_lists_for_items_task.delay(owner.id, item_ids)
+    else:
+        transaction.on_commit(
+            lambda: sync_smart_lists_for_items_task.delay(owner.id, item_ids),
+        )
 
 
 @receiver([post_save, post_delete], sender=TV)
@@ -576,6 +583,11 @@ def _handle_media_cache_change(
 
     if clear_runtime_caches:
         _clear_media_runtime_caches(user_id, changed_media_type)
+        # A concurrent reader can re-cache pre-write state before the save
+        # commits, so clear again once it does.
+        transaction.on_commit(
+            lambda: _clear_media_runtime_caches(user_id, changed_media_type),
+        )
 
     active_context = discover_tab_cache.get_active_context(user_id)
     targets = discover_tab_cache.invalidate_for_media_change(
@@ -672,6 +684,23 @@ def clear_discover_feedback_on_media_save(sender, instance, **kwargs):
     ).delete()
 
 
+@receiver(post_save, sender=Movie)
+@receiver(post_save, sender=Episode)
+def close_resume_point_on_watched(sender, instance, **kwargs):
+    """Close the open resume point of a watched movie or episode (#1809)."""
+    if kwargs.get("raw") or instance.status != Status.COMPLETED.value:
+        return
+    item_id = instance.item_id
+    user_id = (
+        instance.related_season.user_id if sender is Episode else instance.user_id
+    )
+    if not user_id or not item_id:
+        return
+    from api.fork_views_playback import complete_playback_progress
+
+    complete_playback_progress(user_id, item_id)
+
+
 # Same top-level, importer-tracked media types as helpers.get_existing_media()
 # (Season/Episode excluded there and here).
 @receiver(post_delete, sender=TV)
@@ -686,7 +715,11 @@ def clear_discover_feedback_on_media_save(sender, instance, **kwargs):
 @receiver(post_delete, sender=Podcast)
 def record_deleted_media_tombstone(sender, instance, **kwargs):
     """Remember that the user deleted this item so imports don't recreate it."""
-    if kwargs.get("raw"):
+    if (
+        kwargs.get("raw")
+        or _IMPORTER_REPLACING_ROWS.get()
+        or _ACCOUNT_BEING_DELETED.get()
+    ):
         return
     user = getattr(instance, "user", None)
     item = getattr(instance, "item", None)
@@ -750,7 +783,16 @@ def flush_media_change_side_effects(
         normalized_items.append(item)
 
     if normalized_items:
+        from integrations.mal_sync import queue_grouped_sync
         from lists.tasks import sync_smart_lists_for_items_task
+
+        # One trigger per show: its seasons and episodes share the show's
+        # provider id, and the show item itself resolves most directly.
+        per_show = {}
+        for item in sorted(normalized_items, key=lambda item: item.media_type != "tv"):
+            per_show.setdefault((item.source, item.media_id), item)
+        for item in per_show.values():
+            queue_grouped_sync(owner.id, item)
 
         sync_smart_lists_for_items_task.delay(owner.id, list(seen_item_ids))
         DiscoverFeedback.objects.filter(
@@ -978,13 +1020,22 @@ def capture_statistics_previous_dates(sender, instance, **kwargs):
     if not instance.pk:
         instance._history_had_dates = False
         return
-    if media_cache_change_signals_suppressed() or media_change_side_effects_suppressed():
+    if (
+        media_cache_change_signals_suppressed()
+        or media_change_side_effects_suppressed()
+    ):
         return
     previous = (
-        sender.objects.filter(pk=instance.pk).values_list("start_date", "end_date").first()
+        sender.objects.filter(pk=instance.pk)
+        .values_list("start_date", "end_date")
+        .first()
     )
     instance._statistics_previous_dates = previous
-    instance._history_had_dates = previous is None or any(previous)
+    # History places podcasts and music by end date alone, so a start date
+    # does not make a row "dated": a progress save on an unfinished podcast
+    # left no day behind, yet dropped every cached day.
+    placed_by = previous[1:] if previous and sender in (Podcast, Music) else previous
+    instance._history_had_dates = previous is None or any(placed_by)
 
 
 @receiver(post_save, sender=Movie)
@@ -1007,6 +1058,14 @@ def mark_statistics_previous_dates(sender, instance, **kwargs):
         instance.start_date, instance.end_date
     )
     if old_days:
+        # History day keys are the same days, and the receivers that follow
+        # only see the new dates: the day a row moved away from kept showing it.
+        history_cache.invalidate_history_days(
+            instance.user_id,
+            day_keys=sorted(old_days),
+            reason="media_date_moved",
+            force=True,
+        )
         statistics_cache.invalidate_statistics_days(
             instance.user_id, old_days, reason="media_date_moved"
         )
@@ -1077,6 +1136,18 @@ def _schedule_credits_backfill_if_needed(item_id):
     enqueue_credits_backfill_items([item_id], countdown=3)
 
 
+def _defer_credits_backfill_check(item_id):
+    """Run the credits check after the save's response, not inside it."""
+    if not item_id:
+        return
+    from app.tasks import enqueue_item_backfills
+
+    transaction.on_commit(
+        lambda: enqueue_item_backfills.delay(item_id, ["credits_if_needed"]),
+        robust=True,
+    )
+
+
 @receiver(post_save, sender=Episode)
 def schedule_credits_backfill_on_episode_play(sender, instance, **kwargs):
     """Queue credits backfill for episode and related show when an episode play is saved."""
@@ -1087,13 +1158,13 @@ def schedule_credits_backfill_on_episode_play(sender, instance, **kwargs):
     if not getattr(instance, "end_date", None):
         return
     episode_item_id = getattr(instance, "item_id", None)
-    _schedule_credits_backfill_if_needed(episode_item_id)
+    _defer_credits_backfill_check(episode_item_id)
     related_season = getattr(instance, "related_season", None)
     season_item_id = getattr(getattr(related_season, "item", None), "id", None)
-    _schedule_credits_backfill_if_needed(season_item_id)
+    _defer_credits_backfill_check(season_item_id)
     related_tv = getattr(related_season, "related_tv", None)
     tv_item_id = getattr(related_tv, "item_id", None)
-    _schedule_credits_backfill_if_needed(tv_item_id)
+    _defer_credits_backfill_check(tv_item_id)
 
 
 @receiver(post_save, sender=Movie)
@@ -1107,7 +1178,7 @@ def schedule_credits_backfill_on_movie_play(sender, instance, **kwargs):
         getattr(instance, "end_date", None) or getattr(instance, "start_date", None)
     ):
         return
-    _schedule_credits_backfill_if_needed(getattr(instance, "item_id", None))
+    _defer_credits_backfill_check(getattr(instance, "item_id", None))
 
 
 @receiver([post_save, post_delete], sender=Music)
@@ -1263,14 +1334,28 @@ def refresh_statistics_cache_on_anime_change(sender, instance, **kwargs):
         return
     user_id = getattr(instance, "user_id", None)
     day_keys = _collect_reading_statistics_day_keys(instance)
-    history_day_keys = _collect_reading_history_day_keys(instance)
+    history_dates_may_have_moved = _history_dates_may_have_moved(instance, kwargs)
+    if kwargs.get("signal") is post_delete:
+        # History splits the entry into episodes dated by its change log, which
+        # the delete removes, so the days they were on are no longer known.
+        history_day_keys = []
+        history_dates_may_have_moved = True
+    else:
+        history_day_keys = set(_collect_reading_history_day_keys(instance))
+        # The change log row for this save is the newest episode date.
+        history_day_keys.add(history_cache.history_day_key(timezone.now()))
+        for _number, watched_at in flat_anime_episode_watches([instance]).get(
+            instance.id,
+            [],
+        ):
+            history_day_keys.add(history_cache.history_day_key(watched_at))
     _handle_media_cache_change(
         user_id,
         MediaTypes.ANIME.value,
         reason="anime_change",
         history_specs=[(history_day_keys, ("sessions", "repeats"))],
         statistics_day_values=day_keys,
-        history_dates_may_have_moved=_history_dates_may_have_moved(instance, kwargs),
+        history_dates_may_have_moved=history_dates_may_have_moved,
     )
 
 
@@ -1560,10 +1645,12 @@ def schedule_runtime_backfill_on_item_save(
             MediaTypes.TV.value,
             MediaTypes.ANIME.value,
         ):
-            from app.tasks import enqueue_runtime_backfill_items
+            from app.tasks import enqueue_item_backfills
 
             transaction.on_commit(
-                lambda item_id=instance.id: enqueue_runtime_backfill_items([item_id]),
+                lambda item_id=instance.id: enqueue_item_backfills.delay(
+                    item_id, ["runtime"]
+                ),
                 robust=True,
             )
         elif (
@@ -1573,8 +1660,9 @@ def schedule_runtime_backfill_on_item_save(
             from app.tasks import enqueue_episode_runtime_backfill
 
             transaction.on_commit(
-                lambda coordinate=(instance.media_id, instance.source, instance.season_number):
-                    enqueue_episode_runtime_backfill([coordinate]),
+                lambda coordinate=(instance.media_id, instance.source, instance.season_number): (
+                    enqueue_episode_runtime_backfill([coordinate])
+                ),
                 robust=True,
             )
 
@@ -1600,10 +1688,12 @@ def schedule_runtime_backfill_on_item_save(
     if genre_backfill_applicable and (
         genres_missing or genre_identity_changed or tmdb_tv_genre_verification_triggered
     ):
-        from app.tasks import enqueue_genre_backfill_items
+        from app.tasks import enqueue_item_backfills
 
         transaction.on_commit(
-            lambda item_id=instance.id: enqueue_genre_backfill_items([item_id]),
+            lambda item_id=instance.id: enqueue_item_backfills.delay(
+                item_id, ["genres"]
+            ),
             robust=True,
         )
 
@@ -1619,9 +1709,11 @@ def schedule_runtime_backfill_on_item_save(
             )
         )
     ):
-        from app.tasks import enqueue_credits_backfill_items
+        from app.tasks import enqueue_item_backfills
 
         transaction.on_commit(
-            lambda item_id=instance.id: enqueue_credits_backfill_items([item_id]),
+            lambda item_id=instance.id: enqueue_item_backfills.delay(
+                item_id, ["credits"]
+            ),
             robust=True,
         )

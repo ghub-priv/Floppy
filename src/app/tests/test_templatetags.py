@@ -1,11 +1,11 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
 from django.contrib.auth import get_user_model
 from django.template.loader import render_to_string
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.client import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
@@ -25,6 +25,18 @@ from app.models import (
 )
 from app.templatetags import app_tags
 from users.models import DateFormatChoices, TimeFormatChoices
+
+
+class FutureDateTests(SimpleTestCase):
+    def test_only_known_dates_after_today_are_future(self):
+        today = timezone.localdate()
+        for value in (None, "", "invalid", "2026-02-30", today, today - timedelta(days=1)):
+            with self.subTest(value=value):
+                self.assertFalse(app_tags.is_future_date(value))
+        tomorrow = today + timedelta(days=1)
+        self.assertTrue(app_tags.is_future_date(tomorrow))
+        self.assertTrue(app_tags.is_future_date(tomorrow.isoformat()))
+        self.assertTrue(app_tags.is_future_date(datetime.combine(tomorrow, datetime.min.time(), tzinfo=UTC)))
 
 
 class AppTagsTests(TestCase):
@@ -104,6 +116,14 @@ class AppTagsTests(TestCase):
         mock_stat.side_effect = OSError()
         result = app_tags.get_static_file_mtime("nonexistent.css")
         self.assertEqual(result, "")
+
+    def test_related_section_label(self):
+        """DLCs keep their acronym casing; other sections are title-cased."""
+        self.assertEqual(app_tags.related_section_label("dlcs"), "DLCs")
+        self.assertEqual(
+            app_tags.related_section_label("standalone_expansions"),
+            "Standalone Expansions",
+        )
 
     def test_no_underscore(self):
         """Test the no_underscore filter."""
@@ -2126,6 +2146,47 @@ class DetailScoreChipsTemplateTests(TestCase):
         html = self._render(42)
         self.assertIn("42", html)
 
+    def test_chip_row_fades_the_edge_it_can_scroll_towards(self):
+        html = self._render(42)
+        self.assertIn("'detail-score-card-row--fade-left': hasOverflow && !atStart", html)
+        self.assertIn("'detail-score-card-row--fade-right': hasOverflow && !atEnd", html)
+        # Layout can change after init (carousel arrives, Duo unfolds).
+        self.assertIn("new ResizeObserver(() => updateScroll()).observe($refs.scoreRow)", html)
+
+
+class DetailActivitySubtitleTemplateTests(SimpleTestCase):
+    """The phone subtitle breaks at the bullet on narrow widths instead of wrapping mid-date."""
+
+    def _render(self, **subtitle):
+        return render_to_string(
+            "app/components/detail_activity_subtitle.html",
+            {
+                "activity_subtitle": subtitle,
+                "media": {"media_id": "1", "source": "tmdb"},
+                "media_type": MediaTypes.MOVIE.value,
+                "MediaTypes": MediaTypes,
+                "user": None,
+            },
+        )
+
+    def test_duration_subtitle_stacks_when_its_box_is_narrow(self):
+        html = self._render(
+            duration_text="52h 42min watched",
+            primary_text="Progress: 35/44",
+            date_start=None,
+            date_end=None,
+        )
+        self.assertIn("@container", html)
+        self.assertIn("@max-[26rem]:flex-col", html)
+
+    def test_bullet_is_hidden_while_stacked(self):
+        html = self._render(
+            duration_text="1h watched",
+            date_start=date(2020, 10, 10),
+            date_end=date(2026, 9, 26),
+        )
+        self.assertIn("text-gray-600 @max-[26rem]:hidden", html)
+
 
 class EntrySourceLabelTests(TestCase):
     """Test the entry_source_label display filter (issue #1258)."""
@@ -2149,3 +2210,74 @@ class EntrySourceLabelTests(TestCase):
     def test_empty_values(self):
         self.assertEqual(app_tags.entry_source_label(""), "")
         self.assertEqual(app_tags.entry_source_label(None), "")
+
+
+class DetailActionRowTests(SimpleTestCase):
+    """Which icons the detail action row shows, and which fold into More on phones."""
+
+    def row(
+        self,
+        *,
+        source=Sources.TMDB.value,
+        media_type="movie",
+        seerr=False,
+        links=False,
+        podcast_show=None,
+    ):
+        user = SimpleNamespace(
+            seerr_url="https://seerr.test" if seerr else "",
+            seerr_api_key="key" if seerr else "",
+            seerr_user_id=1 if seerr else None,
+        )
+        context = {
+            "request": SimpleNamespace(user=user),
+            "detail_link_sections": [{"title": "Links"}] if links else [],
+            "podcast_show": podcast_show,
+        }
+        return app_tags.detail_action_row(context, {"source": source}, media_type)
+
+    def test_plain_page_keeps_every_icon_inline(self):
+        row = self.row()
+        self.assertEqual(row["overflow"], [])
+        self.assertFalse(row["link"])
+        self.assertFalse(row["seerr"])
+
+    def test_manual_items_have_no_sync_icon(self):
+        self.assertFalse(self.row(source=Sources.MANUAL.value)["sync"])
+        self.assertTrue(self.row()["sync"])
+
+    def test_seerr_needs_a_configured_server_and_a_tmdb_movie_or_show(self):
+        self.assertTrue(self.row(seerr=True)["seerr"])
+        self.assertTrue(self.row(seerr=True, media_type="tv")["seerr"])
+        self.assertFalse(self.row(seerr=False)["seerr"])
+        self.assertFalse(self.row(seerr=True, media_type="season")["seerr"])
+        self.assertFalse(self.row(seerr=True, source=Sources.MAL.value)["seerr"])
+
+    def test_podcast_shows_have_no_notes_icon(self):
+        self.assertFalse(self.row(podcast_show=object())["notes"])
+        self.assertTrue(self.row()["notes"])
+
+    def test_five_icons_do_not_overflow(self):
+        # tags, notes, lists, history, sync
+        self.assertEqual(self.row()["overflow"], [])
+        # tags, notes, lists, history (manual: no sync) + links
+        self.assertEqual(
+            self.row(source=Sources.MANUAL.value, links=True)["overflow"], []
+        )
+
+    def test_six_icons_move_the_last_two_into_more(self):
+        row = self.row(links=True)
+        self.assertEqual(row["overflow"], ["history", "sync"])
+
+    def test_seven_icons_move_the_last_three_into_more(self):
+        row = self.row(links=True, seerr=True)
+        self.assertEqual(row["overflow"], ["seerr", "history", "sync"])
+
+    def test_overflow_never_holds_the_first_four_icons(self):
+        for links in (False, True):
+            for seerr in (False, True):
+                for source in (Sources.TMDB.value, Sources.MANUAL.value):
+                    overflow = self.row(links=links, seerr=seerr, source=source)[
+                        "overflow"
+                    ]
+                    self.assertTrue(set(overflow) <= {"history", "seerr", "sync"})

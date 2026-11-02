@@ -191,6 +191,7 @@ class SimklImporter:
 
         # Track existing media for "new" mode
         self.existing_media = helpers.get_existing_media(user)
+        self.deleted_media = helpers.get_deleted_media(user)
         self.existing_children = helpers.get_existing_children(user)
 
         # Track media IDs to delete in overwrite mode
@@ -314,10 +315,13 @@ class SimklImporter:
                     tv_source,
                     str(tv_media_id),
                     self.mode,
+                    deleted_media=self.deleted_media,
                 )
 
                 if should_process_tv:
-                    tv_item, _ = app.models.Item.objects.get_or_create(
+                    tv_item, _ = helpers.get_or_create_item_across_buckets(
+                        user=self.user,
+                        preferred_bucket=MediaTypes.TV.value,
                         media_id=tv_media_id,
                         source=tv_source,
                         media_type=MediaTypes.TV.value,
@@ -511,7 +515,9 @@ class SimklImporter:
                         },
                     )
 
-                if episodes[-1]["number"] == season_metadata["max_progress"]:
+                if episodes[-1]["number"] == helpers.season_last_episode_number(
+                    season_metadata,
+                ):
                     season_status = Status.COMPLETED.value
                 else:
                     season_status = tv_instance.status
@@ -619,6 +625,7 @@ class SimklImporter:
                     Sources.TMDB.value,
                     str(tmdb_id),
                     self.mode,
+                    deleted_media=self.deleted_media,
                 ):
                     continue
 
@@ -635,7 +642,8 @@ class SimklImporter:
                         continue
                     raise
 
-                movie_item, _ = app.models.Item.objects.get_or_create(
+                movie_item, _ = helpers.get_or_create_item_across_buckets(
+                    user=self.user,
                     media_id=tmdb_id,
                     source=Sources.TMDB.value,
                     media_type=MediaTypes.MOVIE.value,
@@ -706,6 +714,7 @@ class SimklImporter:
             Sources.MAL.value,
             str(mal_id),
             self.mode,
+            deleted_media=self.deleted_media,
         ):
             return
 
@@ -722,7 +731,8 @@ class SimklImporter:
                 return
             raise
 
-        anime_item, _ = app.models.Item.objects.get_or_create(
+        anime_item, _ = helpers.get_or_create_item_across_buckets(
+            user=self.user,
             media_id=mal_id,
             source=Sources.MAL.value,
             media_type=MediaTypes.ANIME.value,

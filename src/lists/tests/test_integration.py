@@ -181,10 +181,17 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
             "You haven't created any lists yet.",
         )
 
+    def _open_lists_from_sidebar(self):
+        """Navigate through Explore unless Lists is already visible."""
+        link = self.page.get_by_role("link", name="Lists", exact=True)
+        if not link.is_visible():
+            self.page.get_by_role("button", name="Explore").click()
+        link.click()
+
     def test_flow(self):
         """Test the flow of adding an item to a list and editing the list."""
         # Create list
-        self.page.get_by_role("link", name="Lists").click()
+        self._open_lists_from_sidebar()
         self.page.get_by_role("button", name="New List").click()
         expect(self.page.locator("h2", has_text="Create New List")).to_be_visible()
         self.page.locator("#id_name").click()
@@ -204,10 +211,11 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
         self.page.locator('[id^="lists-anime-437-"]').get_by_role("button").first.click()
 
         # Edit list
-        self.page.get_by_role("link", name="Lists").click()
+        self._open_lists_from_sidebar()
         expect(self.page.locator("#lists-grid")).to_contain_text("test")
         expect(self.page.locator("#lists-grid")).to_contain_text("1 item")
-        self.page.get_by_role("button", name="Edit test", exact=True).click()
+        self.page.get_by_role("button", name="Options for test", exact=True).click()
+        self.page.get_by_role("button", name="Settings", exact=True).click()
         expect(self.page.locator("#lists-grid")).to_contain_text("Edit List")
         self.page.locator("#id_1_name").click()
         self.page.locator("#id_1_name").fill("test rename")
@@ -320,6 +328,13 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
             page.wait_for_function("window.__listCountUpdates >= 1")
             expect(count).to_have_text("0 items")
             self.assertEqual(page.evaluate("window.__listCountUpdates"), 1)
+            # The live server shares the test's one in-memory SQLite
+            # connection. A page left open keeps issuing requests (polling,
+            # service worker), and the next pass writes a list from this
+            # thread, which intermittently failed with "database table is
+            # locked". Let the page go quiet and close it before looping on.
+            page.wait_for_load_state("networkidle")
+            page.close()
 
     def test_ticking_a_card_checkbox_selects_the_item(self):
         """In Select Items mode the card's own checkbox selects the item."""

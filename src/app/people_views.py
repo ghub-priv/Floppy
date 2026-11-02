@@ -11,8 +11,11 @@ from app import (
     helpers,
     statistics_cache,
 )
+from app.media_list_filters import media_list_entries_for_items
 from app.media_list_views import build_filter_data_from_items
 from app.models import (
+    TV,
+    BasicMedia,
     Book,
     Comic,
     CreditRoleType,
@@ -22,6 +25,7 @@ from app.models import (
     MediaTypes,
     Movie,
     Sources,
+    Status,
     Studio,
 )
 from app.providers import (
@@ -38,6 +42,41 @@ from app.providers import (
 from users.models import MediaSortChoices
 
 logger = __import__("logging").getLogger(__name__)
+
+
+def attach_card_media(user, entries, source):
+    """Give each credit entry the item and tracking row the shared media card reads.
+
+    A title the viewer has an Item for uses it, with their tracking row loaded the
+    library's way, so the card shows their rating, status, progress and hover
+    actions. Any other title is shown from the provider's data, like search results.
+    """
+    tracked_items = {
+        entry["tracked_item"].pk: entry["tracked_item"]
+        for entry in entries
+        if entry.get("tracked_item")
+    }
+    media_by_item_id = {}
+    if tracked_items and user.is_authenticated:
+        rows_by_type = {}
+        for loaded in media_list_entries_for_items(user, list(tracked_items.values())):
+            if loaded.media is not None:
+                media_by_item_id[loaded.item.pk] = loaded.media
+                rows_by_type.setdefault(loaded.item.media_type, []).append(
+                    loaded.media,
+                )
+        for media_type, rows in rows_by_type.items():
+            BasicMedia.objects.annotate_max_progress(rows, media_type)
+    for entry in entries:
+        tracked_item = entry.get("tracked_item")
+        entry["media"] = media_by_item_id.get(tracked_item.pk) if tracked_item else None
+        if entry["media"] is not None:
+            entry["card_item"] = entry["media"].item
+        else:
+            entry["card_item"] = tracked_item or {
+                **entry,
+                "source": entry.get("source") or source,
+            }
 
 
 @require_GET
@@ -253,7 +292,11 @@ def person_detail(request, source, person_id, name):
                     item__person_credits__person__source=source,
                     item__person_credits__person__source_person_id=person_id_str,
                 )
-                .filter(Q(start_date__isnull=False) | Q(end_date__isnull=False))
+                .filter(
+                    Q(start_date__isnull=False)
+                    | Q(end_date__isnull=False)
+                    | Q(status=Status.COMPLETED.value)
+                )
                 .select_related("item")
                 .distinct()
             )
@@ -318,7 +361,7 @@ def person_detail(request, source, person_id, name):
                 item__source=source,
                 item__media_type=MediaTypes.MOVIE.value,
                 item__media_id__in=watched_movie_media_ids,
-            ).exclude(start_date__isnull=True, end_date__isnull=True)
+            ).filter(Q(end_date__isnull=False) | Q(status=Status.COMPLETED.value))
             watched_media_keys.update(
                 (media_type, str(media_id))
                 for media_type, media_id in watched_movies.values_list(
@@ -330,16 +373,29 @@ def person_detail(request, source, person_id, name):
         if watched_tv_media_ids:
             watched_tv = Episode.all_objects.filter(
                 related_season__user=request.user,
-                end_date__isnull=False,
                 related_season__related_tv__item__source=source,
                 related_season__related_tv__item__media_type=MediaTypes.TV.value,
                 related_season__related_tv__item__media_id__in=watched_tv_media_ids,
-            )
+            ).filter(Q(end_date__isnull=False) | Q(status=Status.COMPLETED.value))
             watched_media_keys.update(
                 (media_type, str(media_id))
                 for media_type, media_id in watched_tv.values_list(
                     "related_season__related_tv__item__media_type",
                     "related_season__related_tv__item__media_id",
+                ).distinct()
+            )
+            completed_tv = TV.objects.filter(
+                user=request.user,
+                item__source=source,
+                item__media_type=MediaTypes.TV.value,
+                item__media_id__in=watched_tv_media_ids,
+                status=Status.COMPLETED.value,
+            )
+            watched_media_keys.update(
+                (media_type, str(media_id))
+                for media_type, media_id in completed_tv.values_list(
+                    "item__media_type",
+                    "item__media_id",
                 ).distinct()
             )
 
@@ -349,7 +405,11 @@ def person_detail(request, source, person_id, name):
                 item__source=source,
                 item__media_type=MediaTypes.BOOK.value,
                 item__media_id__in=watched_book_media_ids,
-            ).filter(Q(start_date__isnull=False) | Q(end_date__isnull=False))
+            ).filter(
+                Q(start_date__isnull=False)
+                | Q(end_date__isnull=False)
+                | Q(status=Status.COMPLETED.value)
+            )
             watched_media_keys.update(
                 (media_type, str(media_id))
                 for media_type, media_id in watched_books.values_list(
@@ -364,7 +424,11 @@ def person_detail(request, source, person_id, name):
                 item__source=source,
                 item__media_type=MediaTypes.COMIC.value,
                 item__media_id__in=watched_comic_media_ids,
-            ).filter(Q(start_date__isnull=False) | Q(end_date__isnull=False))
+            ).filter(
+                Q(start_date__isnull=False)
+                | Q(end_date__isnull=False)
+                | Q(status=Status.COMPLETED.value)
+            )
             watched_media_keys.update(
                 (media_type, str(media_id))
                 for media_type, media_id in watched_comics.values_list(
@@ -379,7 +443,11 @@ def person_detail(request, source, person_id, name):
                 item__source=source,
                 item__media_type=MediaTypes.MANGA.value,
                 item__media_id__in=watched_manga_media_ids,
-            ).filter(Q(start_date__isnull=False) | Q(end_date__isnull=False))
+            ).filter(
+                Q(start_date__isnull=False)
+                | Q(end_date__isnull=False)
+                | Q(status=Status.COMPLETED.value)
+            )
             watched_media_keys.update(
                 (media_type, str(media_id))
                 for media_type, media_id in watched_manga.values_list(
@@ -653,6 +721,8 @@ def person_detail(request, source, person_id, name):
     combined_years = sorted(watched_years | set(all_filmography_years), reverse=True)
     filter_data["years"] = [{"value": str(y), "label": str(y)} for y in combined_years]
 
+    attach_card_media(request.user, [*watched_filmography, *filmography], source)
+
     context = {
         "user": request.user,
         "person": person_data,
@@ -792,6 +862,8 @@ def studio_detail(request, source, studio_id, name):
         studio_founded = studio_details.get("founded")
         studio_developed_count = studio_details.get("developed_count")
         studio_published_count = studio_details.get("published_count")
+
+    attach_card_media(request.user, credited_titles, source)
 
     media_types_present = {entry.get("media_type") for entry in credited_titles}
     credited_media_type = (

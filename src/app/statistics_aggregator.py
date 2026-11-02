@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from django.apps import apps
 from django.core.cache import cache
 from django.utils import timezone
+from django.utils.translation import gettext_noop
 
 from app import config, helpers
 from app import statistics as stats
@@ -41,6 +42,24 @@ COIN_FLIP_PROBABILITY = 0.5
 SCORE_SCALE_FIVE_POINT = 5
 
 
+def _tv_season_items(items_by_type):
+    """Return season metadata that belongs in the TV bucket, not Anime.
+
+    Season rows are folded into TV so a season-only rating still surfaces.
+    Grouped anime seasons are stored as Season rows too, but their parent is a
+    TV row in the anime library; folding them into TV leaks the same show into
+    both activity cards. ``stats_media_type`` records the bucket the day
+    builder attributed the season to.
+    """
+    seasons = items_by_type.get(MediaTypes.SEASON.value, {})
+    return {
+        item_id: meta
+        for item_id, meta in seasons.items()
+        if meta.get("stats_media_type", MediaTypes.SEASON.value)
+        != MediaTypes.ANIME.value
+    }
+
+
 def _build_today_card(
     today_in_history,
     today_in_history_year,
@@ -57,15 +76,15 @@ def _build_today_card(
         return {
             "entry": today_in_user_history,
             "year": today_in_user_history_year,
-            "label": "TODAY IN YOUR HISTORY",
-            "date_prefix": "Played in",
+            "label": gettext_noop("TODAY IN YOUR HISTORY"),
+            "date_prefix": gettext_noop("Played in"),
             "use_release_url": False,
         }
     return {
         "entry": today_in_history,
         "year": today_in_history_year,
-        "label": "TODAY IN HISTORY",
-        "date_prefix": "Released in",
+        "label": gettext_noop("TODAY IN HISTORY"),
+        "date_prefix": gettext_noop("Released in"),
         "use_release_url": True,
     }
 
@@ -391,6 +410,11 @@ def _fetch_media_objects(media_refs):
             if missing_ids:
                 TV = apps.get_model("app", MediaTypes.TV.value)
                 for tv in TV.objects.filter(id__in=missing_ids).select_related("item"):
+                    # Grouped anime is stored on TV rows; without the route
+                    # annotation the shared media card links it to /tv/.
+                    tv.route_media_type = MediaTypes.ANIME.value
+                    if getattr(tv, "item", None) is not None:
+                        tv.item.route_media_type = MediaTypes.ANIME.value
                     media_objects[(media_type, tv.id)] = tv
 
     return media_objects
@@ -761,6 +785,7 @@ def _aggregate_statistics_from_days(
                             "item_id": item_id,
                             "media_id": meta.get("media_id"),
                             "media_type": meta.get("media_type"),
+                            "stats_media_type": meta.get("stats_media_type"),
                             "status": meta.get("status"),
                             "score": meta.get("score"),
                             "score_dt": score_dt,
@@ -1024,7 +1049,8 @@ def _aggregate_statistics_from_days(
     # bucket, so the day-builder pipeline above never sees them. Pick them up
     # here directly so undated items (e.g. Planning-status items that haven't
     # been started, or imports missing dates) still count towards status,
-    # score and media-count aggregates regardless of the selected date range.
+    # score and media-count aggregates. They belong to All Time only: a date
+    # range holds just the activity that happened inside it (#1521).
     # TV is excluded here: it (and Season) override start_date/end_date as
     # computed properties derived from Episode rows, not real DB columns, so
     # they can't be filtered on directly and raise FieldError if added back.
@@ -1040,7 +1066,7 @@ def _aggregate_statistics_from_days(
         MediaTypes.COMIC.value,
     ]
     for media_type in undated_models:
-        if media_type not in active_types:
+        if not is_all_time_query or media_type not in active_types:
             continue
         model = apps.get_model("app", media_type)
         qs = model.objects.filter(
@@ -1092,7 +1118,11 @@ def _aggregate_statistics_from_days(
 
     media_count = {"total": 0}
     for media_type in active_types:
-        count = len(items_by_type.get(media_type, {}))
+        if media_type == MediaTypes.SEASON.value:
+            # Grouped anime seasons belong to their show in the anime bucket.
+            count = len(_tv_season_items(items_by_type))
+        else:
+            count = len(items_by_type.get(media_type, {}))
         if count:
             media_count[media_type] = count
             media_count["total"] += count
@@ -1115,7 +1145,7 @@ def _aggregate_statistics_from_days(
     for media_type in distribution_types:
         items = dict(items_by_type.get(media_type, {}))
         if media_type == MediaTypes.TV.value:
-            items.update(items_by_type.get(MediaTypes.SEASON.value, {}))
+            items.update(_tv_season_items(items_by_type))
         if not items:
             continue
         status_counts = dict.fromkeys(status_order, 0)
@@ -1164,7 +1194,7 @@ def _aggregate_statistics_from_days(
     for media_type in distribution_types:
         items = dict(items_by_type.get(media_type, {}))
         if media_type == MediaTypes.TV.value:
-            items.update(items_by_type.get(MediaTypes.SEASON.value, {}))
+            items.update(_tv_season_items(items_by_type))
         if not items:
             continue
         score_counts = dict.fromkeys(score_range, 0)
@@ -1824,7 +1854,13 @@ def _aggregate_statistics_from_days(
         model = apps.get_model("app", media_type)
         completed_queryset = model.objects.filter(
             user=user, status=Status.COMPLETED.value
-        ).select_related("item")
+        )
+        # This scans a large library for every range; let the database drop the
+        # entries the date predicate would reject instead of loading them.
+        range_filter = stats._reading_entry_range_filter(start_date, end_date)
+        if range_filter is not None:
+            completed_queryset = completed_queryset.filter(range_filter)
+        completed_queryset = completed_queryset.select_related("item")
         for entry in completed_queryset.iterator(chunk_size=500):
             if not stats._reading_entry_in_range(entry, start_date, end_date):
                 continue

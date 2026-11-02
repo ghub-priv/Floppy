@@ -863,3 +863,57 @@ class CalendarActiveShowLoadTests(TestCase):
         _events, large = self._run()
 
         self.assertEqual(len(large), len(small))
+
+
+class CalendarActiveAnimeLoadTests(TestCase):
+    """The anime dedup pass reads only the columns it uses, not the large JSON ones."""
+
+    def test_active_anime_items_load_only_needed_columns(self):
+        user = get_user_model().objects.create_user(username="cal-anime", password="pw")
+        anime = Item.objects.create(
+            media_id="52991",
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            title="Test Anime",
+            synopsis="A long synopsis the calendar never prints.",
+        )
+        Anime.objects.create(
+            item=anime,
+            user=user,
+            status=Status.IN_PROGRESS.value,
+        )
+        when = timezone.now() + datetime.timedelta(days=1)
+        Event.objects.create(item=anime, content_number=1, datetime=when)
+
+        with CaptureQueriesContext(connection) as captured:
+            list(Event.objects.get_user_events(user, when.date(), when.date()))
+
+        anime_reads = [
+            query["sql"]
+            for query in captured.captured_queries
+            if 'FROM "app_item"' in query["sql"]
+            and 'JOIN "app_anime"' in query["sql"]
+            and "events_event" not in query["sql"]
+        ]
+        self.assertEqual(len(anime_reads), 1)
+        self.assertIn('"app_item"."title"', anime_reads[0])
+        self.assertNotIn('"app_item"."synopsis"', anime_reads[0])
+
+
+class EventDatetimeIndexTests(TestCase):
+    """The calendar's month range must not scan every event ever stored."""
+
+    def test_datetime_has_an_index(self):
+        with connection.cursor() as cursor:
+            constraints = connection.introspection.get_constraints(
+                cursor,
+                Event._meta.db_table,
+            )
+
+        self.assertTrue(
+            any(
+                details["index"] and details["columns"] == ["datetime"]
+                for details in constraints.values()
+            ),
+            "events_event.datetime must be indexed for the calendar's date range",
+        )

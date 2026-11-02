@@ -19,6 +19,7 @@ from django.core.signing import BadSignature, Signer
 from django.http import FileResponse, HttpResponse, HttpResponseNotFound
 from django.urls import reverse
 
+from app import local_covers
 from app.models.application_settings import ApplicationSettings
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,27 @@ APPROVED_IMAGE_HOSTS = frozenset(
         "static.pocketcasts.com",
         "media.kitsu.app",
         "s4.anilist.co",
+        "cdn.cloudflare.steamstatic.com",
+        "cdn2.steamgriddb.com",
+        "cdn.thegamesdb.net",
+        "thumbnails.libretro.com",
+        # YouTube thumbnails. img.youtube.com redirects to i.ytimg.com, and
+        # each redirect hop is checked against this list.
+        "i.ytimg.com",
+        "img.youtube.com",
+        "yt3.ggpht.com",
+        "yt3.googleusercontent.com",
+        # CLZ Comics covers: its catalogue, and the user's own uploads.
+        "clzcomics.r.sizr.io",
+        "comic-clzimages.s3.amazonaws.com",
     },
 )
-APPROVED_IMAGE_HOST_SUFFIXES = (".mzstatic.com", ".comics.org", ".mangabaka.org")
+APPROVED_IMAGE_HOST_SUFFIXES = (
+    ".mzstatic.com",
+    ".comics.org",
+    ".mangabaka.org",
+    ".screenscraper.fr",
+)
 
 
 def cache_root():
@@ -62,16 +81,32 @@ def cache_root():
     return Path(settings.FLOPPY_DATA_DIR) / "image-cache"
 
 
+# A page asks once per image card; a few seconds of per-process memo spares the
+# shared cache a round trip each time, and a toggle reaches every worker within it.
+_LOCAL_SETTING_SECONDS = 5
+_local_setting = (0.0, False)
+
+
 def _setting_value():
     """Read the toggle, creating the singleton lazily for old installs."""
-    enabled = cache.get(SETTING_CACHE_KEY)
-    if isinstance(enabled, bool):
-        return enabled
+    global _local_setting  # noqa: PLW0603
+    expires_at, local = _local_setting
+    now = time.monotonic()
+    if now < expires_at:
+        return local
 
-    setting, _ = ApplicationSettings.objects.get_or_create(pk=1)
-    enabled = bool(setting.image_caching_enabled)
-    cache.set(SETTING_CACHE_KEY, enabled, SETTING_CACHE_SECONDS)
+    enabled = cache.get(SETTING_CACHE_KEY)
+    if not isinstance(enabled, bool):
+        setting, _ = ApplicationSettings.objects.get_or_create(pk=1)
+        enabled = bool(setting.image_caching_enabled)
+        cache.set(SETTING_CACHE_KEY, enabled, SETTING_CACHE_SECONDS)
+    _local_setting = (now + _LOCAL_SETTING_SECONDS, enabled)
     return enabled
+
+
+def _forget_local_setting():
+    global _local_setting  # noqa: PLW0603
+    _local_setting = (0.0, False)
 
 
 def is_enabled():
@@ -85,12 +120,14 @@ def set_enabled(enabled):
     setting.image_caching_enabled = bool(enabled)
     setting.save(update_fields=["image_caching_enabled"])
     cache.set(SETTING_CACHE_KEY, bool(enabled), SETTING_CACHE_SECONDS)
+    _forget_local_setting()
     return bool(enabled)
 
 
 def invalidate_setting_cache():
     """Invalidate the cached toggle after external/database changes."""
     cache.delete(SETTING_CACHE_KEY)
+    _forget_local_setting()
 
 
 def _is_private_or_local_hostname(hostname):
@@ -166,9 +203,22 @@ def _paths(url):
     return root / f"{key}.data", root / f"{key}.json"
 
 
+def _requires_proxy(url):
+    """Return whether an image can only be fetched with credentials Floppy holds.
+
+    ScreenScraper media needs the developer credentials, which must never reach
+    a browser, so these URLs go through the proxy whatever the caching toggle.
+    """
+    from app.game_artwork.screenscraper import is_screenscraper_url
+
+    return is_screenscraper_url(url)
+
+
 def rewrite_image_url(url, request=None):
     """Rewrite an approved image URL to Floppy when caching is enabled."""
-    if not is_enabled() or not is_approved_url(url):
+    if local_covers.is_local(url):
+        return request.build_absolute_uri(url) if request is not None else url
+    if not is_approved_url(url) or not (is_enabled() or _requires_proxy(url)):
         return url
     path = reverse("image_cache", kwargs={"token": _token_for_url(url)})
     if request is not None:
@@ -200,6 +250,13 @@ def _remove_temp(path):
         Path(path).unlink()
 
 
+def _authenticated(url):
+    """Attach provider credentials to the fetch URL, never to a stored one."""
+    from app.game_artwork.screenscraper import authenticate
+
+    return authenticate(url)
+
+
 def _open_image_response(url):
     """Open an approved image URL, following approved redirects.
 
@@ -213,7 +270,7 @@ def _open_image_response(url):
             if not is_approved_url(current_url):
                 return None, None
             response = requests.get(
-                current_url,
+                _authenticated(current_url),
                 headers={"Accept": "image/*"},
                 timeout=REQUEST_TIMEOUT,
                 stream=True,
@@ -346,6 +403,11 @@ def cover_bytes(url, *, fetch=True):
     image is downloaded into memory only: nothing is written to the cache, so
     the instance's image caching setting keeps meaning what it says.
     """
+    if local_covers.is_local(url):
+        path = local_covers.path_for(url.removeprefix(local_covers.COVER_URL_PREFIX))
+        with suppress(OSError):
+            return path.read_bytes() if path else None
+        return None
     if not is_approved_url(url):
         return None
     data_path, metadata_path = _paths(url)
@@ -381,7 +443,7 @@ def serve_cached_image(token, request):
     data_path, metadata_path = _paths(url)
     metadata = _metadata(data_path, metadata_path)
     if not data_path.is_file() or metadata is None:
-        if not is_enabled() or not _fetch_to_disk(url):
+        if not (is_enabled() or _requires_proxy(url)) or not _fetch_to_disk(url):
             return HttpResponseNotFound()
         metadata = _metadata(data_path, metadata_path)
         if metadata is None:

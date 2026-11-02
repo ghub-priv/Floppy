@@ -1,4 +1,6 @@
 import logging
+import re
+from dataclasses import replace
 
 from django.conf import settings
 from django.contrib import messages
@@ -10,6 +12,8 @@ from django.views.decorators.http import require_GET
 from app import helpers
 from app.library_query import LibraryQueryExecutor
 from app.library_query.adapters import from_media_list_filters
+from app.library_query.filters import shows_with_collected_episodes
+from app.library_query.trackers import tracker_sources
 from app.log_safety import exception_summary
 from app.media_list_filters import (
     MediaListEntry,
@@ -20,6 +24,8 @@ from app.models import (
     AlbumTracker,
     ArtistTracker,
     BasicMedia,
+    CollectionEntry,
+    CollectionField,
     Item,
     ItemTag,
     MediaTypes,
@@ -130,7 +136,7 @@ def _tagged_untracked_items(user, media_type, query, library_ids):
     (a subquery or a set of ids). Kept as one relational query so the caller's
     slice bounds the work.
     """
-    tagged = Exists(ItemTag.objects.filter(tag__user=user, item_id=OuterRef("pk")))
+    tagged = Q(pk__in=ItemTag.objects.filter(tag__user=user).values("item_id"))
     include_anime_in_anime, include_anime_in_tv = (
         metadata_resolution.anime_library_visibility(user)
     )
@@ -150,10 +156,52 @@ def _tagged_untracked_items(user, media_type, query, library_ids):
         type_filter = Q(media_type=media_type)
 
     return (
-        Item.objects.filter(type_filter, tagged, title__icontains=query)
+        Item.objects.filter(
+            type_filter,
+            tagged,
+            Q(title__icontains=query)
+            | Q(original_title__icontains=query)
+            | Q(localized_title__icontains=query),
+        )
         .exclude(id__in=library_ids)
+        .defer("watch_providers")
         .order_by("title", "id")
     )
+
+
+_BARCODE_RE = re.compile(r"\d{8,18}|\d{9}[\dX]")
+
+
+def _barcode_owned_items(user, media_type, query):
+    """Return the user's ``media_type`` items whose Barcode field matches *query*.
+
+    A scan reads the 12 or 13 digit code, while a CLZ export may carry a 2 or
+    5 digit supplement after it, so a stored barcode matches on its start.
+    """
+    code = re.sub(r"[\s-]", "", query).upper()
+    if not _BARCODE_RE.fullmatch(code):
+        return []
+    field_ids = [
+        str(field_id)
+        for field_id in CollectionField.objects.filter(
+            group__user=user,
+            label__iexact="Barcode",
+        ).values_list("id", flat=True)
+    ]
+    if not field_ids:
+        return []
+
+    item_ids = {}
+    entries = CollectionEntry.objects.filter(
+        user=user,
+        item__media_type=media_type,
+    ).values_list("item_id", "custom_field_values")
+    for item_id, values in entries:
+        for field_id in field_ids:
+            stored = re.sub(r"[\s-]", "", str((values or {}).get(field_id) or ""))
+            if stored.upper().startswith(code):
+                item_ids[item_id] = None
+    return list(Item.objects.filter(id__in=item_ids).order_by("title", "id"))
 
 
 def _merge_by_title(entries, extra_items, limit):
@@ -167,8 +215,12 @@ def _merge_by_title(entries, extra_items, limit):
 class PodcastShowAdapter:
     """Adapter to make PodcastShowTracker compatible with media components."""
 
-    def __init__(self, tracker):
-        """Copy the tracker's fields and find or create the show's Item."""
+    def __init__(self, tracker, item=None):
+        """Copy the tracker's fields and find or create the show's Item.
+
+        ``item`` is the show's already-fetched Item, when the caller batched
+        the lookup; otherwise it is fetched or created here.
+        """
         self.tracker = tracker
         self.id = tracker.id
         self.status = tracker.status
@@ -179,15 +231,17 @@ class PodcastShowAdapter:
         self.created_at = tracker.created_at
         self.updated_at = tracker.updated_at
 
-        self.item, _ = Item.objects.get_or_create(
-            media_id=tracker.show.podcast_uuid,
-            source=tracker.show.source,
-            media_type=MediaTypes.PODCAST.value,
-            defaults={
-                "title": tracker.show.title,
-                "image": tracker.show.image or settings.IMG_NONE,
-            },
-        )
+        if item is None:
+            item, _ = Item.objects.get_or_create(
+                media_id=tracker.show.podcast_uuid,
+                source=tracker.show.source,
+                media_type=MediaTypes.PODCAST.value,
+                defaults={
+                    "title": tracker.show.title,
+                    "image": tracker.show.image or settings.IMG_NONE,
+                },
+            )
+        self.item = item
         show_image = tracker.show.image or settings.IMG_NONE
         if self.item.title != tracker.show.title or self.item.image != show_image:
             self.item.title = tracker.show.title
@@ -218,6 +272,17 @@ def _local_podcast_results(user, query, limit):
         .order_by("title", "id")
     )
     total = show_trackers.count() + tagged_only.count()
+    page_trackers = list(
+        show_trackers.select_related("show").order_by("show__title")[:limit],
+    )
+    # One query for the shows' existing Items instead of a get_or_create each.
+    existing_items = {
+        (item.media_id, item.source): item
+        for item in Item.objects.filter(
+            media_type=MediaTypes.PODCAST.value,
+            media_id__in=[t.show.podcast_uuid for t in page_trackers],
+        )
+    }
     results = [
         {
             "item": media.item,
@@ -225,8 +290,13 @@ def _local_podcast_results(user, query, limit):
             "matched_title": _matched_title(media.item, query, user),
         }
         for media in (
-            PodcastShowAdapter(tracker)
-            for tracker in show_trackers.order_by("show__title")[:limit]
+            PodcastShowAdapter(
+                tracker,
+                item=existing_items.get(
+                    (tracker.show.podcast_uuid, tracker.show.source),
+                ),
+            )
+            for tracker in page_trackers
         )
     ]
     results += [
@@ -268,10 +338,19 @@ def _local_music_results(user, query, limit):
     }
 
 
-def _local_media_results(user, media_type, query, limit, *, annotate_progress=True):
+def _local_media_results(
+    user,
+    media_type,
+    query,
+    limit,
+    *,
+    annotate_progress=True,
+    count_total=True,
+):
     """Return ``(results, total)`` for tracked, collected or tagged ``media_type`` items.
 
-    Only the first ``limit`` items are loaded; the total is counted in SQL.
+    Only the first ``limit`` items are loaded; the total is counted in SQL
+    unless ``count_total`` is false (typeahead, which never shows it).
     """
     # Every status plus "no status", so an imported rating with no status and
     # a collected-only item both count (the media list's "everything" view).
@@ -286,17 +365,48 @@ def _local_media_results(user, media_type, query, limit, *, annotate_progress=Tr
         sort="title",
         direction="asc",
     )
+    library_query = from_media_list_filters(filters, (media_type,))
+    # Search starts from the owner's item ids. The general collection-only
+    # predicate uses a correlated EXISTS, which makes SQLite scan the entire
+    # catalogue for an unfiltered title search, even for a tiny saved library.
+    membership = Q(
+        pk__in=CollectionEntry.objects.filter(user=user)
+        .exclude(item__media_type=MediaTypes.EPISODE.value)
+        .values("item_id"),
+    )
+    if media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value):
+        membership |= Q(
+            media_type__in=(MediaTypes.TV.value, MediaTypes.ANIME.value),
+            pk__in=shows_with_collected_episodes(user),
+        )
+    tracked = Q(pk__in=[])
+    for source in tracker_sources(user, media_type, library_query.routing):
+        item_ids = source.item_ids(user)
+        # Collection-only membership must not bypass tracker routing (for
+        # example, grouped anime that the user excludes from the TV library).
+        membership &= ~Q(pk__in=item_ids)
+        tracked |= source.item_q & Q(pk__in=item_ids)
+    # UNION lets SQLite plan each indexed membership branch independently;
+    # joining the branches with OR can revert to a full catalogue scan.
+    scope = (
+        Item.objects.filter(membership).order_by().values("pk")
+        .union(Item.objects.filter(tracked).order_by().values("pk"))
+    )
     executor = LibraryQueryExecutor(
         user,
-        from_media_list_filters(filters, (media_type,)),
+        replace(library_query, within=scope),
     )
-    library_total = executor.count()
-    entries = media_list_entries_for_items(
-        user,
-        executor.page(0, limit, total=library_total).items,
+    library_total = executor.count() if count_total else 0
+    items = executor.page(0, limit, total=library_total, defer=("watch_providers",)).items
+    # Typeahead only reads item titles, artwork and URLs. Loading tracker
+    # graphs here also loads every season/episode for each matching show.
+    entries = (
+        media_list_entries_for_items(user, items)
+        if annotate_progress
+        else [MediaListEntry(item=item, media=None) for item in items]
     )
     tagged_only = _tagged_untracked_items(user, media_type, query, executor.matches())
-    total = library_total + tagged_only.count()
+    total = library_total + tagged_only.count() if count_total else 0
     merged = _merge_by_title(entries, tagged_only, limit)
 
     if media_type == MediaTypes.ANIME.value:
@@ -371,7 +481,7 @@ def media_search(request):
     else:
         media_type = MediaTypes.TV.value
     query = request.GET["q"]
-    page = int(request.GET.get("page", 1))
+    page = helpers.get_page_number(request)
     layout = request.GET.get("layout", "grid")
 
     if media_type == ALL_SEARCH_TYPE:
@@ -433,6 +543,23 @@ def media_search(request):
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Local search failed: %s", exception_summary(exc))
 
+    if (
+        request.user.is_authenticated
+        and page == 1
+        and local_results_kind == "media"
+        and media_type != MediaTypes.PODCAST.value
+    ):
+        shown = {result["item"].id for result in local_results}
+        owned = [
+            item
+            for item in _barcode_owned_items(request.user, media_type, query)
+            if item.id not in shown
+        ]
+        local_results = [
+            {"item": item, "media": None, "matched_title": None} for item in owned
+        ] + local_results
+        local_results_total += len(owned)
+
     source_options = metadata_resolution.available_metadata_sources(
         media_type,
         request.user,
@@ -462,6 +589,15 @@ def media_search(request):
                     user=request.user,
                     language=metadata_resolution.metadata_language_default(request.user),
                 )
+    except services.ProviderNotConfiguredError as exc:
+        logger.warning(
+            "Search skipped for media_type=%s query=%s: %s",
+            media_type,
+            query,
+            exception_summary(exc),
+        )
+        messages.error(request, str(exc))
+        data = {"page": 1, "total_results": 0, "total_pages": 0, "results": []}
     except services.ProviderAPIError as exc:
         logger.warning(
             "Search failed for media_type=%s query=%s: %s",
@@ -509,11 +645,18 @@ def media_search(request):
                 result.get("item"), query, request.user
             )
 
+    fallback_source = data.get("fallback_source")
     context = {
         "user": request.user,
         "data": data,
         "source": source,
         "source_options": source_options,
+        "source_label": metadata_resolution.metadata_provider_label(source),
+        "fallback_source_label": (
+            metadata_resolution.metadata_provider_label(fallback_source)
+            if fallback_source
+            else ""
+        ),
         "media_type": media_type,
         "layout": layout,
         "local_results": local_results,
@@ -651,6 +794,7 @@ def get_saved_suggestions(user, media_type, query, limit=8):
         query,
         limit,
         annotate_progress=False,
+        count_total=False,
     )
     local_items = [result["item"] for result in results]
 

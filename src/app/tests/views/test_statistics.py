@@ -43,6 +43,7 @@ from app.models import (
     Status,
     Studio,
 )
+from app.templatetags.app_tags import media_url
 from users.templatetags.user_tags import user_date_format
 
 
@@ -584,7 +585,9 @@ class StatisticsViewTests(TestCase):
         # On the 1st the month-to-date range is one day and is correctly
         # labelled "Today", so pin "today" to the 15th of last month.
         real_localdate = timezone.localdate
-        today = (timezone.localdate().replace(day=1) - timedelta(days=1)).replace(day=15)
+        today = (timezone.localdate().replace(day=1) - timedelta(days=1)).replace(
+            day=15
+        )
         month_start = today.replace(day=1)
         last_year_today = today - relativedelta(years=1)
 
@@ -2265,7 +2268,7 @@ class StatisticsViewTests(TestCase):
         self.assertEqual(item_relation_queries, [])
 
     def test_statistics_view_lazyloads_media_list_images(self):
-        """Statistics list cards should lazyload their thumbnails instead of eager-loading them."""
+        """Statistics thumbnails expose their URL while staying natively lazy."""
         cache.clear()
         self.client.login(**self.credentials)
         played_at = timezone.make_aware(
@@ -2340,30 +2343,16 @@ class StatisticsViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         response_body = response.content.decode()
-        self.assertRegex(
-            response_body, r'<img[^>]+data-src="http://example\.com/lazy-movie\.jpg"'
-        )
-        self.assertRegex(
-            response_body, r'<img[^>]+data-src="http://example\.com/lazy-game\.jpg"'
-        )
-        self.assertRegex(
-            response_body, r'<img[^>]+data-src="http://example\.com/lazy-artist\.jpg"'
-        )
-        self.assertRegex(
-            response_body, r'<img[^>]+data-src="http://example\.com/lazy-album\.jpg"'
-        )
-        self.assertNotRegex(
-            response_body, r'<img[^>]+\ssrc="http://example\.com/lazy-movie\.jpg"'
-        )
-        self.assertNotRegex(
-            response_body, r'<img[^>]+\ssrc="http://example\.com/lazy-game\.jpg"'
-        )
-        self.assertNotRegex(
-            response_body, r'<img[^>]+\ssrc="http://example\.com/lazy-artist\.jpg"'
-        )
-        self.assertNotRegex(
-            response_body, r'<img[^>]+\ssrc="http://example\.com/lazy-album\.jpg"'
-        )
+        for media_kind in ("movie", "game", "artist", "album"):
+            with self.subTest(media_kind=media_kind):
+                self.assertRegex(
+                    response_body,
+                    rf'<img[^>]+loading="lazy"[^>]+src="http://example\.com/lazy-{media_kind}\.jpg"',
+                )
+                self.assertNotIn(
+                    f'data-src="http://example.com/lazy-{media_kind}.jpg"',
+                    response_body,
+                )
 
     @patch("app.tasks.enqueue_credits_backfill_items")
     def test_statistics_top_talent_uses_episode_credits_with_show_fallback(
@@ -3283,6 +3272,94 @@ class StatisticsViewTests(TestCase):
             stats_data["top_played"]["anime"][0]["media"].item.title,
             "Cached Genre Anime Show",
         )
+
+    def test_grouped_anime_season_stays_out_of_tv_top_rated(self):
+        """A grouped anime season must not roll into the TV activity card."""
+        cache.clear()
+        watched_at = timezone.now()
+        show_item = Item.objects.create(
+            media_id="grouped-top-rated-show",
+            source=Sources.TVDB.value,
+            media_type=MediaTypes.TV.value,
+            library_media_type=MediaTypes.ANIME.value,
+            title="Grouped Top Rated Show",
+            image="http://example.com/grouped-top-rated.jpg",
+        )
+        tv = TV.objects.create(
+            item=show_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            score=8,
+        )
+        season_item = Item.objects.create(
+            media_id="grouped-top-rated-show",
+            source=Sources.TVDB.value,
+            media_type=MediaTypes.SEASON.value,
+            library_media_type=MediaTypes.ANIME.value,
+            title="Grouped Top Rated Show Season 1",
+            image="http://example.com/grouped-top-rated-s1.jpg",
+            season_number=1,
+        )
+        season = Season.objects.create(
+            item=season_item,
+            user=self.user,
+            related_tv=tv,
+            status=Status.COMPLETED.value,
+            score=8,
+        )
+        episode_item = Item.objects.create(
+            media_id="grouped-top-rated-show",
+            source=Sources.TVDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            library_media_type=MediaTypes.ANIME.value,
+            title="Grouped Top Rated Show Episode 1",
+            image="http://example.com/grouped-top-rated-s1e1.jpg",
+            season_number=1,
+            episode_number=1,
+            runtime_minutes=24,
+        )
+        Episode.objects.create(
+            item=episode_item,
+            related_season=season,
+            end_date=watched_at,
+        )
+
+        statistics_cache.invalidate_statistics_cache(self.user.id)
+        stats_data = statistics_cache.refresh_statistics_cache(
+            self.user.id, "This Year"
+        )
+
+        self.assertNotIn("season", stats_data["media_count"])
+        self.assertEqual(stats_data["media_count"]["anime"], 1)
+
+        tv_titles = [
+            media.item.title for media in stats_data["top_rated_by_type"].get("tv", [])
+        ]
+        self.assertNotIn("Grouped Top Rated Show", tv_titles)
+        self.assertNotIn("Grouped Top Rated Show Season 1", tv_titles)
+
+        anime_titles = [
+            media.item.title
+            for media in stats_data["top_rated_by_type"].get("anime", [])
+        ]
+        self.assertIn("Grouped Top Rated Show", anime_titles)
+        grouped_media = next(
+            media
+            for media in stats_data["top_rated_by_type"]["anime"]
+            if media.item.title == "Grouped Top Rated Show"
+        )
+        expected_url = reverse(
+            "media_details",
+            kwargs={
+                "source": Sources.TVDB.value,
+                "media_type": MediaTypes.ANIME.value,
+                "media_id": "grouped-top-rated-show",
+                "title": "grouped-top-rated-show",
+            },
+        )
+        self.assertEqual(media_url(grouped_media.item), expected_url)
+        top_played = stats_data["top_played"]["anime"][0]["media"]
+        self.assertEqual(media_url(top_played.item), expected_url)
 
 
 class StatisticsTalentFragmentTests(TestCase):

@@ -1,6 +1,6 @@
 import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -1011,6 +1011,396 @@ class JellyfinWebhookTests(TestCase):
         )
 
     @override_settings(TVDB_API_KEY="")
+    @patch("app.services.grouped_anime.classify_tv_metadata")
+    @patch("integrations.webhooks.anime_mappings.fetch_mapping_data")
+    @patch("app.providers.mal.anime")
+    @patch("app.providers.tmdb.tv_with_seasons")
+    @patch("app.providers.tmdb.find")
+    def test_provider_switch_keeps_new_season_on_flat_mal_home(
+        self,
+        mock_find,
+        mock_tv_with_seasons,
+        mock_mal_anime,
+        mock_load_mapping_data,
+        mock_classify,
+    ):
+        """Changing the Anime Provider must not open a second home for a show.
+
+        The grouped fast path used to run before the existing-home lookup, so
+        a user who switched from MAL to TVDB saw the next season appear as a
+        new show with only that season's progress (#1698).
+        """
+        self.user.anime_enabled = True
+        self.user.anime_metadata_source_default = Sources.TVDB.value
+        self.user.save()
+
+        mock_find.return_value = {
+            "tv_episode_results": [],
+            "tv_results": [{"id": 12345}],
+        }
+        mock_tv_with_seasons.return_value = {
+            "media_id": "12345",
+            "title": "Split Cour Show",
+            "image": "https://example.com/show.jpg",
+            "genres": ["Animation"],
+            "tvdb_id": "402474",
+            "season/2": {"episodes": [{"episode_number": 1}]},
+        }
+        mock_load_mapping_data.return_value = {
+            "tvdb_show:402474:s1": {"mal:46569": {"1-12": "1-12"}},
+            "tvdb_show:402474:s2": {"mal:46569": {"1-12": "13-24"}},
+        }
+        mock_mal_anime.return_value = {
+            "media_id": "46569",
+            "title": "Split Cour Show",
+            "image": "https://example.com/anime.jpg",
+            "max_progress": 24,
+        }
+        mock_classify.return_value = GroupedAnimeMatch(
+            decision="move",
+            reason="exact_external_id_and_animation_genre",
+            tmdb_id="12345",
+            tvdb_id="402474",
+            mal_ids=("46569",),
+        )
+
+        anime_item = Item.objects.create(
+            media_id="46569",
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            title="Split Cour Show",
+            image="https://example.com/anime.jpg",
+        )
+        ItemProviderLink.objects.create(
+            item=anime_item,
+            provider=Sources.TMDB.value,
+            provider_media_type=MediaTypes.TV.value,
+            provider_media_id="12345",
+            season_number=1,
+            episode_offset=0,
+        )
+        anime = Anime.objects.create(
+            item=anime_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+            progress=12,
+        )
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(
+                {
+                    "Event": "Stop",
+                    "Item": {
+                        "Type": "Episode",
+                        "Name": "Episode 1",
+                        "ProviderIds": {"Tmdb": "12345", "Tvdb": "402474"},
+                        "UserData": {"Played": True},
+                        "SeriesName": "Split Cour Show",
+                        "ParentIndexNumber": 2,
+                        "IndexNumber": 1,
+                    },
+                },
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            TV.objects.filter(user=self.user).count(),
+            0,
+            "switching provider opened a second home for the same show",
+        )
+        anime.refresh_from_db()
+        self.assertEqual(anime.progress, 13)
+        self.assertEqual(
+            Anime.objects.filter(user=self.user).count(),
+            1,
+        )
+
+    @override_settings(TVDB_API_KEY="")
+    @patch("integrations.webhooks.anime_mappings.fetch_mapping_data")
+    @patch("app.providers.mal.anime")
+    @patch("app.providers.tmdb.tv_with_seasons")
+    @patch("app.providers.tmdb.find")
+    def test_tv_bucket_row_does_not_take_episodes_from_flat_mal_home(
+        self,
+        mock_find,
+        mock_tv_with_seasons,
+        mock_mal_anime,
+        mock_load_mapping_data,
+    ):
+        """A stray TV-library row must not capture a flat MAL anime's episodes.
+
+        A Plex show rating creates a TV row for a show the user tracks as flat
+        MAL anime; later watches went to that row, invisible to the anime
+        details page and to MAL sync.
+        """
+        mock_find.return_value = {
+            "tv_episode_results": [],
+            "tv_results": [{"id": 12345}],
+        }
+        mock_tv_with_seasons.return_value = {
+            "media_id": "12345",
+            "title": "Flat Show",
+            "image": "https://example.com/show.jpg",
+            "tvdb_id": "402474",
+            "season/1": {"episodes": [{"episode_number": 9}]},
+        }
+        mock_load_mapping_data.return_value = {}
+        mock_mal_anime.return_value = {
+            "media_id": "35078",
+            "title": "Flat Show",
+            "image": "https://example.com/anime.jpg",
+            "max_progress": 12,
+        }
+
+        tv_item = Item.objects.create(
+            media_id="12345",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            library_media_type=MediaTypes.TV.value,
+            title="Flat Show",
+        )
+        tv = TV.objects.create(
+            item=tv_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        anime_item = Item.objects.create(
+            media_id="35078",
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            title="Flat Show",
+            image="https://example.com/anime.jpg",
+        )
+        ItemProviderLink.objects.create(
+            item=anime_item,
+            provider=Sources.TMDB.value,
+            provider_media_type=MediaTypes.TV.value,
+            provider_media_id="12345",
+        )
+        anime = Anime.objects.create(
+            item=anime_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+            progress=8,
+        )
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(
+                {
+                    "Event": "Stop",
+                    "Item": {
+                        "Type": "Episode",
+                        "Name": "Episode 9",
+                        "ProviderIds": {"Tmdb": "12345", "Tvdb": "402474"},
+                        "UserData": {"Played": True},
+                        "SeriesName": "Flat Show",
+                        "ParentIndexNumber": 1,
+                        "IndexNumber": 9,
+                    },
+                },
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        anime.refresh_from_db()
+        self.assertEqual(anime.progress, 9)
+        self.assertFalse(Season.objects.filter(related_tv=tv).exists())
+
+    @override_settings(TVDB_API_KEY="")
+    @patch("integrations.webhooks.anime_mappings.fetch_mapping_data")
+    @patch("app.providers.mal.anime")
+    @patch("app.providers.tmdb.tv_with_seasons")
+    @patch("app.providers.tmdb.find")
+    def test_tv_row_with_history_keeps_episodes_beside_a_flat_mal_entry(
+        self,
+        mock_find,
+        mock_tv_with_seasons,
+        mock_mal_anime,
+        mock_load_mapping_data,
+    ):
+        """A show really tracked in the TV library keeps its episodes.
+
+        Regression: a flat MAL entry linked to the same show (an OVA, one cour)
+        took every later scrobble away from the user's TV row.
+        """
+        mock_find.return_value = {
+            "tv_episode_results": [],
+            "tv_results": [{"id": 12345}],
+        }
+        mock_tv_with_seasons.return_value = {
+            "media_id": "12345",
+            "title": "Flat Show",
+            "image": "https://example.com/show.jpg",
+            "tvdb_id": "402474",
+            "season/1": {"episodes": [{"episode_number": 9}]},
+        }
+        mock_load_mapping_data.return_value = {}
+        mock_mal_anime.return_value = {
+            "media_id": "35078",
+            "title": "Flat Show",
+            "image": "https://example.com/anime.jpg",
+            "max_progress": 12,
+        }
+
+        tv_item = Item.objects.create(
+            media_id="12345",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            library_media_type=MediaTypes.TV.value,
+            title="Flat Show",
+        )
+        tv = TV.objects.create(
+            item=tv_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        season = Season.objects.create(
+            item=Item.objects.create(
+                media_id="12345", source=Sources.TMDB.value,
+                media_type=MediaTypes.SEASON.value, season_number=1,
+                library_media_type=MediaTypes.TV.value, title="Flat Show",
+            ),
+            user=self.user, related_tv=tv, status=Status.IN_PROGRESS.value,
+        )
+        Episode.objects.create(
+            item=Item.objects.create(
+                media_id="12345", source=Sources.TMDB.value,
+                media_type=MediaTypes.EPISODE.value, season_number=1, episode_number=8,
+                library_media_type=MediaTypes.TV.value, title="Episode 8",
+            ),
+            related_season=season,
+        )
+        anime_item = Item.objects.create(
+            media_id="35078",
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            title="Flat Show",
+            image="https://example.com/anime.jpg",
+        )
+        ItemProviderLink.objects.create(
+            item=anime_item,
+            provider=Sources.TMDB.value,
+            provider_media_type=MediaTypes.TV.value,
+            provider_media_id="12345",
+        )
+        anime = Anime.objects.create(
+            item=anime_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+            progress=8,
+        )
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(
+                {
+                    "Event": "Stop",
+                    "Item": {
+                        "Type": "Episode",
+                        "Name": "Episode 9",
+                        "ProviderIds": {"Tmdb": "12345", "Tvdb": "402474"},
+                        "UserData": {"Played": True},
+                        "SeriesName": "Flat Show",
+                        "ParentIndexNumber": 1,
+                        "IndexNumber": 9,
+                    },
+                },
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        anime.refresh_from_db()
+        self.assertEqual(anime.progress, 8)
+        self.assertTrue(
+            Episode.objects.filter(related_season=season, item__episode_number=9).exists(),
+        )
+
+    @override_settings(TVDB_API_KEY="")
+    @patch("integrations.webhooks.anime_mappings.fetch_mapping_data")
+    @patch("app.providers.mal.anime")
+    @patch("app.providers.tmdb.tv_with_seasons")
+    @patch("app.providers.tmdb.find")
+    def test_tv_bucket_row_keeps_episodes_when_the_anime_home_is_grouped(
+        self,
+        mock_find,
+        mock_tv_with_seasons,
+        mock_mal_anime,
+        mock_load_mapping_data,
+    ):
+        """Only a flat MAL home takes the episode from a TV-bucket row.
+
+        Regression: any anime home dropped the TV row, so with a grouped home
+        the episode fell through to flat MAL mapping and started a flat entry.
+        """
+        mock_find.return_value = {
+            "tv_episode_results": [],
+            "tv_results": [{"id": 12345}],
+        }
+        mock_tv_with_seasons.return_value = {
+            "media_id": "12345",
+            "title": "Flat Show",
+            "image": "https://example.com/show.jpg",
+            "tvdb_id": "402474",
+            "season/1": {"episodes": [{"episode_number": 9}]},
+        }
+        mock_load_mapping_data.return_value = {
+            "tvdb_show:402474:s1": {"mal:35078": {}},
+            "tmdb_show:12345:s1": {"mal:35078": {}},
+        }
+        mock_mal_anime.return_value = {
+            "media_id": "35078",
+            "title": "Flat Show",
+            "image": "https://example.com/anime.jpg",
+            "max_progress": 12,
+        }
+
+        tv_item = Item.objects.create(
+            media_id="12345",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            library_media_type=MediaTypes.TV.value,
+            title="Flat Show",
+        )
+        tv = TV.objects.create(
+            item=tv_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        grouped_home = patch(
+            "integrations.webhooks.base.BaseWebhookProcessor._find_existing_anime_home",
+            return_value=("grouped", MagicMock()),
+        )
+        with grouped_home:
+            response = self.client.post(
+                self.url,
+                data=json.dumps(
+                    {
+                        "Event": "Stop",
+                        "Item": {
+                            "Type": "Episode",
+                            "Name": "Episode 9",
+                            "ProviderIds": {"Tmdb": "12345", "Tvdb": "402474"},
+                            "UserData": {"Played": True},
+                            "SeriesName": "Flat Show",
+                            "ParentIndexNumber": 1,
+                            "IndexNumber": 9,
+                        },
+                    },
+                ),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Anime.objects.filter(user=self.user).exists())
+        self.assertTrue(Season.objects.filter(related_tv=tv).exists())
+
+    @override_settings(TVDB_API_KEY="")
     @patch("integrations.webhooks.anime_mappings.fetch_mapping_data")
     @patch("app.providers.tmdb.tv_with_seasons")
     @patch("app.providers.tmdb.find")
@@ -1516,6 +1906,38 @@ class JellyfinWebhookTests(TestCase):
         )
 
     @patch("integrations.webhooks.jellyfin.services.get_media_metadata")
+    def test_unofficial_plugin_item_removed_removes_jellyfin_collection(
+        self,
+        mock_get_media_metadata,
+    ):
+        """The unofficial Webhooks plugin sends ItemRemoved instead of ItemDeleted."""
+        mock_get_media_metadata.return_value = {
+            "media_id": "603",
+            "title": "The Matrix",
+            "image": "https://example.com/matrix.jpg",
+        }
+        payload = {
+            "Event": "ItemAdded",
+            "Item": {"Type": "Movie", "ProviderIds": {"Tmdb": "603"}},
+        }
+        processor = JellyfinWebhookProcessor()
+        processor.process_payload(payload, self.user)
+        item = Item.objects.get(media_id="603", media_type=MediaTypes.MOVIE.value)
+
+        processor.process_payload({**payload, "Event": "ItemRemoved"}, self.user)
+
+        self.assertFalse(
+            CollectionSourceState.objects.filter(
+                user=self.user,
+                item=item,
+                source="jellyfin",
+            ).exists(),
+        )
+        self.assertFalse(
+            CollectionEntry.objects.filter(user=self.user, item=item).exists()
+        )
+
+    @patch("integrations.webhooks.jellyfin.services.get_media_metadata")
     @patch.object(
         JellyfinWebhookProcessor, "_find_tv_media_id", return_value=("1668", None, None)
     )
@@ -1672,6 +2094,44 @@ class JellyfinWebhookTests(TestCase):
 
         self.assertTrue(
             CollectionEntry.objects.filter(user=self.user, item=item).exists()
+        )
+        mock_get_media_metadata.assert_not_called()
+
+    @patch("integrations.webhooks.jellyfin.services.get_media_metadata")
+    def test_item_added_keeps_the_resolution_of_a_collected_title(
+        self,
+        mock_get_media_metadata,
+    ):
+        """Jellyfin sends no quality, so its ItemAdded must not blank one."""
+        item = Item.objects.create(
+            media_id="603",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="The Matrix",
+        )
+        entry = CollectionEntry.objects.create(
+            user=self.user,
+            item=item,
+            media_type="digital",
+            resolution="4K",
+        )
+
+        JellyfinWebhookProcessor().process_payload(
+            {
+                "Event": "ItemAdded",
+                "Item": {"Type": "Movie", "ProviderIds": {"Tmdb": "603"}},
+            },
+            self.user,
+        )
+
+        entry.refresh_from_db()
+        self.assertEqual(entry.resolution, "4K")
+        self.assertTrue(
+            CollectionSourceState.objects.filter(
+                user=self.user,
+                item=item,
+                source="jellyfin",
+            ).exists(),
         )
         mock_get_media_metadata.assert_not_called()
 

@@ -8,7 +8,7 @@ import requests
 from django.conf import settings
 from django.utils import timezone
 
-from app.models import CollectionEntry, Item, MediaTypes, Sources
+from app.models import Item, MediaTypes, Sources
 from app.providers import services
 from integrations import connection_health, import_progress
 from integrations.imports.helpers import (
@@ -21,6 +21,7 @@ from integrations.imports.helpers import (
 from integrations.models import SonarrInstance
 from integrations.safe_fetch import send_to_self_hosted
 from integrations.source_sync import (
+    prune_collection_source_states,
     remove_collection_source_state,
     upsert_collection_source_state,
 )
@@ -135,6 +136,8 @@ class SonarrImporter:
     def import_data(self):
         """Sync Sonarr ownership into Floppy collection rows."""
         imported_counts = defaultdict(int)
+        owned_item_ids = set()
+        complete = True
 
         try:
             series_rows = self.client.series()
@@ -162,11 +165,25 @@ class SonarrImporter:
                 imported_counts["skipped_missing_ids"] += 1
                 continue
 
-            if not self._sync_series_episode_collection(item, row):
+            synced_item_ids = self._sync_series_episode_collection(item, row)
+            if synced_item_ids is None:
+                # A failed episode fetch must not make the whole series look
+                # deleted, so skip the reconciliation for this run.
+                complete = False
                 continue
-            imported_counts[item.media_type] += 1
+            owned_item_ids.update(synced_item_ids)
+            imported_counts["collection"] += 1
             imported_counts["updated"] += 1
 
+        if complete:
+            removed = prune_collection_source_states(
+                user=self.user,
+                source="sonarr",
+                source_instance_id=self.instance.pk,
+                keep_item_ids=owned_item_ids,
+            )
+            if removed:
+                imported_counts["removed"] += removed
         self.instance.last_sync_at = timezone.now()
         connection_health.record_success(self.instance, extra_fields=["last_sync_at"])
 
@@ -252,7 +269,11 @@ class SonarrImporter:
         return None
 
     def _sync_series_episode_collection(self, show_item, row):
-        """Create episode-level Sonarr collection ownership for a show."""
+        """Own the series' episodes, returning the item ids now kept.
+
+        Returns None when the episode list could not be read, so the caller
+        can skip reconciliation instead of treating the series as deleted.
+        """
         series_id = row.get("id")
         if series_id in (None, ""):
             upsert_collection_source_state(
@@ -263,14 +284,14 @@ class SonarrImporter:
                 quality_label="",
                 source_updated_at=self._parse_source_timestamp(row),
             )
-            return True
+            return {show_item.id}
 
         try:
             episode_rows = self.client.episodes(series_id)
         except MediaImportError as error:
             title = row.get("title") or row.get("sortTitle") or show_item.title
             self.warnings.append(f"{title}: failed to fetch Sonarr episodes ({error}).")
-            return False
+            return None
 
         self._ensure_season_items(show_item, row, episode_rows)
 
@@ -297,7 +318,19 @@ class SonarrImporter:
             show_item,
             keep_episode_item_ids=collected_episode_item_ids,
         )
-        return True
+        if not collected_episode_item_ids:
+            return collected_episode_item_ids
+
+        # The show gets its own entry so it lists under TV Shows, as Plex does.
+        upsert_collection_source_state(
+            user=self.user,
+            item=show_item,
+            source="sonarr",
+            source_instance_id=self.instance.pk,
+            quality_label="",
+            source_updated_at=self._parse_source_timestamp(row),
+        )
+        return collected_episode_item_ids | {show_item.id}
 
     def _child_bucket(self, show_item, default_bucket):
         """Return the library bucket a show's season/episode rows belong in.
@@ -502,37 +535,13 @@ class SonarrImporter:
             )
 
         if keep_episode_item_ids:
-            self._retire_legacy_series_collection_entry(show_item)
+            return
 
         remove_collection_source_state(
             user=self.user,
             item=show_item,
             source="sonarr",
             source_instance_id=self.instance.pk,
-        )
-
-    def _retire_legacy_series_collection_entry(self, show_item):
-        """Delete the legacy show-level Sonarr row once episode rows exist."""
-        if not show_item.source_states.filter(
-            user=self.user,
-            source="sonarr",
-            source_instance_id=self.instance.pk,
-        ).exists():
-            return
-
-        legacy_entry_ids = list(
-            CollectionEntry.objects.filter(
-                user=self.user,
-                item=show_item,
-            )
-            .order_by("-updated_at", "-collected_at", "-id")
-            .values_list("id", flat=True)
-        )
-        if len(legacy_entry_ids) != 1:
-            return
-
-        retry_on_lock(
-            lambda: CollectionEntry.objects.filter(id=legacy_entry_ids[0]).delete(),
         )
 
     def _parse_episode_release_datetime(self, row):

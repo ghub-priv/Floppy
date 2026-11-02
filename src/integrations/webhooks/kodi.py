@@ -47,11 +47,17 @@ class KodiWebhookProcessor(BaseWebhookProcessor):
 
         progress = payload.get("progress") or {}
         position_seconds = progress.get("time")
+        duration_seconds = payload.get("duration")
         if not self._should_record(
             KODI_EVENT_MAP[event_type],
             played=self._is_played(payload),
             position_seconds=(
                 position_seconds if isinstance(position_seconds, int | float) else None
+            ),
+            duration_seconds=(
+                duration_seconds
+                if isinstance(duration_seconds, int | float)
+                else None
             ),
         ):
             return

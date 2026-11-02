@@ -223,8 +223,8 @@ class TvProviderSwitchTests(TestCase):
 
 
 @override_settings(TVDB_API_KEY="test-tvdb-key")
-class TvProviderPromptTests(TestCase):
-    """Switching the TV default asks before moving, and "leave" really leaves."""
+class TvProviderReviewTests(TestCase):
+    """Switching the TV default leaves existing shows visible and movable."""
 
     def setUp(self):
         self.user = get_user_model().objects.create_user(
@@ -246,44 +246,58 @@ class TvProviderPromptTests(TestCase):
     def _switch_default(self, source):
         return self.client.post(
             reverse("set_media_type_provider", args=[MediaTypes.TV.value]),
-            {"source": source},
+            {
+                "source": source,
+                "next": reverse("provider_detail", args=["tmdb"]) + "?tab=metadata",
+            },
             follow=True,
         )
 
-    def test_prompt_appears_once_and_pauses_the_nightly_move(self):
+    def test_existing_shows_stay_visible_with_an_explicit_move_action(self):
         self._track(Sources.TMDB.value)
 
         response = self._switch_default(Sources.TVDB.value)
 
-        self.assertContains(response, "Move your tracked shows to")
-        self.assertContains(response, "Leave my library as it is")
+        tv_source = next(
+            source for source in response.context["provider_page"]["metadata"]["sources"]
+            if source["key"] == "tv"
+        )
+        self.assertEqual(tv_source["existingCount"], 1)
+        self.assertEqual(tv_source["current"], Sources.TVDB.value)
+        self.assertEqual(tv_source["moveAction"], reverse("convert_tv_library"))
         self.assertContains(response, reverse("convert_tv_library"))
+        # The preference change alone never touches the existing item or
+        # turns on an automatic migration.
+        item = Item.objects.get(source=Sources.TMDB.value, media_id="1396")
+        self.assertEqual(item.source, Sources.TMDB.value)
         self.user.refresh_from_db()
-        self.assertFalse(self.user.tv_auto_move_to_default_provider)
-        again = self.client.get(reverse("metadata_settings"))
-        self.assertNotContains(again, "Move your tracked shows to")
+        self.assertTrue(self.user.tv_auto_move_to_default_provider)
 
-    def test_no_prompt_and_flag_untouched_when_nothing_is_on_the_other_provider(self):
+        # The review surface is persistent, not a one-time modal.
+        again = self.client.get(
+            reverse("provider_detail", args=["tmdb"]) + "?tab=metadata",
+        )
+        tv_source = next(
+            source for source in again.context["provider_page"]["metadata"]["sources"]
+            if source["key"] == "tv"
+        )
+        self.assertEqual(tv_source["existingCount"], 1)
+        self.assertEqual(tv_source["moveAction"], reverse("convert_tv_library"))
+
+    def test_no_move_notice_when_nothing_is_on_the_other_provider(self):
         self._track(Sources.TVDB.value, "81189")
 
         response = self._switch_default(Sources.TVDB.value)
 
-        self.assertNotContains(response, "Move your tracked shows to")
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.tv_auto_move_to_default_provider)
+        tv_source = next(
+            source for source in response.context["provider_page"]["metadata"]["sources"]
+            if source["key"] == "tv"
+        )
+        self.assertEqual(tv_source["existingCount"], 0)
+        self.assertEqual(tv_source["moveAction"], "")
+        self.assertNotContains(response, reverse("convert_tv_library"))
 
-    def test_leaving_the_library_keeps_it_out_of_the_nightly_job(self):
-        from app.tasks_tv_provider_migration import _migration_candidates_queryset
-
-        item = self._track(Sources.TMDB.value)
-        self._switch_default(Sources.TVDB.value)
-
-        self.assertNotIn(item, _migration_candidates_queryset())
-
-    def test_move_endpoint_queues_the_task_and_turns_nightly_back_on(self):
-        self.user.tv_auto_move_to_default_provider = False
-        self.user.save(update_fields=["tv_auto_move_to_default_provider"])
-
+    def test_move_endpoint_queues_the_task(self):
         with patch(
             "app.tasks_tv_provider_migration.move_user_tv_library_task.delay",
         ) as mock_delay:
@@ -291,8 +305,14 @@ class TvProviderPromptTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         mock_delay.assert_called_once_with(self.user.id)
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.tv_auto_move_to_default_provider)
+
+    def test_nightly_provider_move_is_not_scheduled(self):
+        from django.conf import settings
+
+        self.assertNotIn(
+            "migrate_tv_shows_to_preferred_provider",
+            settings.CELERY_BEAT_SCHEDULE,
+        )
 
     def test_task_moves_what_it_can_and_names_what_it_leaves(self):
         from app.tasks_tv_provider_migration import move_user_tv_library_task

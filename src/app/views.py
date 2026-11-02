@@ -95,6 +95,7 @@ from app.collection_views import (
     collection_remove_season,
     collection_status_api,
     collection_update,
+    collection_update_season,
 )
 from app.columns import (
     resolve_column_config,
@@ -150,6 +151,7 @@ from app.forms import (
     CollectionEntryForm,
     EpisodeForm,
     ManualItemForm,
+    PodcastShowTrackerForm,
     get_form_class,
 )
 from app.history_views import (
@@ -267,6 +269,7 @@ from app.music_views import (
     music_album_details,
     music_artist_details,
     music_track_details,
+    music_track_notes,
     prefetch_artist_covers,
     prefetch_artist_relation_images,
     sync_artist_discography_view,
@@ -400,7 +403,12 @@ from integrations import anime_mapping
 from integrations.models import CollectionSourceState
 from lists.models import CustomList
 from lists.views_helpers import get_public_list_for_item
-from users.home_screen import build_home_page_groups
+from users.home_screen import (
+    build_home_page_groups,
+    build_home_page_manifest,
+    build_home_row,
+    warm_first_group_split,
+)
 from users.models import (
     HomeSortChoices,
     MediaSortChoices,
@@ -441,19 +449,51 @@ def home(request):
         except (TypeError, ValueError):
             load_row_seed = None
 
-        # First paint renders only the first group; the rest hydrates via
-        # home_rest_fragment. Row-append requests build only their target shelf.
+        # First paint renders only the first group; the rest arrive one row
+        # at a time via home_row_fragment. Row-append requests build only
+        # their target shelf.
         defer_remaining_groups = load_row_id is None
-        home_groups = build_home_page_groups(
-            request.user,
-            items_limit,
-            load_row_id=load_row_id,
-            load_row_offset=load_row_offset,
-            load_row_seed=load_row_seed,
-            append_only=bool(request.headers.get("HX-Request") and load_row_id),
-            only_row_id=load_row_id if request.headers.get("HX-Request") else None,
-            first_group_only=defer_remaining_groups,
+        manifest = (
+            build_home_page_manifest(request.user)
+            if defer_remaining_groups
+            else None
         )
+        deferred_source = []
+        if manifest is not None:
+            # The shell renders a group only if its shelves are already
+            # cached; cold shelves load as their own fragments.
+            inline_index, defer_from = warm_first_group_split(
+                request.user, manifest, items_limit
+            )
+            deferred_source = manifest[defer_from:]
+            groups = [manifest[inline_index]] if inline_index is not None else []
+        else:
+            groups = None
+        home_groups = (
+            build_home_page_groups(
+                request.user,
+                items_limit,
+                load_row_id=load_row_id,
+                load_row_offset=load_row_offset,
+                load_row_seed=load_row_seed,
+                append_only=bool(request.headers.get("HX-Request") and load_row_id),
+                only_row_id=load_row_id if request.headers.get("HX-Request") else None,
+                first_group_only=defer_remaining_groups,
+                groups=groups,
+            )
+            if groups != []
+            else []
+        )
+
+        deferred_groups = [
+            {
+                "media_type": group["media_type"],
+                "label": group["label"],
+                "icon_svg": group["icon_svg"],
+                "row_ids": [row.id for row in group["rows"]],
+            }
+            for group in deferred_source
+        ]
 
         if request.headers.get("HX-Request") and load_row_id:
             target_row = next(
@@ -490,18 +530,13 @@ def home(request):
             "user": request.user,
             "home_groups": home_groups,
             "items_limit": items_limit,
-            "active_playback_card": live_playback.build_home_playback_card(
+            "active_playback_cards": live_playback.build_home_playback_cards(
                 request.user
             ),
             "MediaTypes": MediaTypes,
             "IMG_NONE": settings.IMG_NONE,
-            "defer_remaining_groups": defer_remaining_groups and bool(home_groups),
-            "artwork_poll_row_ids": [
-                row["row_id"]
-                for group in home_groups
-                for row in group["rows"]
-                if row.get("poll_for_covers")
-            ],
+            "defer_remaining_groups": bool(deferred_groups),
+            "deferred_groups": deferred_groups,
         }
         return render(request, "app/home.html", context)
     except OperationalError:
@@ -512,36 +547,31 @@ def home(request):
             "home_groups": [],
             "items_limit": 14,
             "database_error": True,
-            "active_playback_card": None,
+            "active_playback_cards": [],
             "MediaTypes": MediaTypes,
             "IMG_NONE": settings.IMG_NONE,
             "defer_remaining_groups": False,
-            "artwork_poll_row_ids": [],
+            "deferred_groups": [],
         }
         return render(request, "app/home.html", context)
 
 
 @require_GET
-def home_rest_fragment(request):
-    """Deferred home content: every group after the first.
-
-    The shell renders the first group synchronously; this fragment supplies
-    the rest (served from the per-row cache when warm) plus an out-of-band
-    update of the artwork poller covering all groups.
-    """
-    home_groups = build_home_page_groups(request.user, items_limit=14)
+def home_row_fragment(request, row_id: int):
+    """One deferred Home row, fetched independently as its data becomes ready."""
+    try:
+        row = build_home_row(request.user, row_id, items_limit=14)
+    except OperationalError:
+        logger.exception("Database error in deferred home row")
+        return HttpResponse(status=503)
+    if row is None:
+        return HttpResponse("")
     return render(
         request,
-        "app/components/home_rest_fragment.html",
+        "app/components/_scrollable_row.html",
         {
+            "row": row,
             "user": request.user,
-            "home_groups": home_groups[1:],
-            "artwork_poll_row_ids": [
-                row["row_id"]
-                for group in home_groups
-                for row in group["rows"]
-                if row.get("poll_for_covers")
-            ],
             "MediaTypes": MediaTypes,
             "IMG_NONE": settings.IMG_NONE,
             "return_url": reverse("home"),
@@ -625,11 +655,20 @@ def home_rows_artwork_refresh(request):
     """
     raw_ids = request.GET.get("ids", "")
     row_ids = {int(part) for part in raw_ids.split(",") if part.strip().isdigit()}
+    # Deferred rows can still be loading after the first poll. Keep polling
+    # cheaply until they settle instead of re-arming the poller from each
+    # row fragment (which would replace the poller and re-render rows).
+    raw_pending = request.GET.get("pending", "")
+    rows_pending = raw_pending.isdigit() and int(raw_pending) > 0
     if not row_ids:
         return render(
             request,
             "app/components/home_artwork_poller.html",
-            {"poll_row_ids": []},
+            {
+                "poll_row_ids": [],
+                "active": rows_pending,
+                "retry_soon": rows_pending,
+            },
         )
 
     cover_state = _artwork_cover_fingerprint(request.user)
@@ -642,7 +681,11 @@ def home_rows_artwork_refresh(request):
         return render(
             request,
             "app/components/home_artwork_poller.html",
-            {"poll_row_ids": sorted(row_ids)},
+            {
+                "poll_row_ids": sorted(row_ids),
+                "active": rows_pending,
+                "retry_soon": rows_pending,
+            },
         )
 
     home_groups = build_home_page_groups(
@@ -677,6 +720,8 @@ def home_rows_artwork_refresh(request):
             "poll_row_ids": sorted(
                 row["row_id"] for row in rows if row.get("poll_for_covers")
             ),
+            "active": rows_pending,
+            "retry_soon": rows_pending,
         },
         request=request,
     )
@@ -770,15 +815,15 @@ def trakt_series_graph_fragment(request, source, media_id):
 
 
 def active_playback_fragment(request):
-    """HTMX fragment: return the active playback card or empty response."""
-    card = live_playback.build_home_playback_card(request.user)
-    if not card:
+    """HTMX fragment: return the active playback cards or empty response."""
+    cards = live_playback.build_home_playback_cards(request.user)
+    if not cards:
         return HttpResponse("")
     return render(
         request,
-        "app/components/active_playback_card.html",
+        "app/components/active_playback_cards.html",
         {
-            "active_playback_card": card,
+            "active_playback_cards": cards,
         },
     )
 
@@ -844,11 +889,30 @@ def episode_details(
     public_list_view = request.GET.get("public_view") == "1"
     public_view = is_anonymous or public_list_view
 
+    # Match season/media detail pages: honor the user's metadata language
+    # (and any per-show override) instead of always using TMDB_LANG.
+    show_media_type = (
+        MediaTypes.ANIME.value
+        if parent_media_type == MediaTypes.ANIME.value
+        else MediaTypes.TV.value
+    )
+    show_item = Item.objects.filter(
+        media_id=media_id,
+        source=source,
+        media_type=show_media_type,
+    ).first()
+    metadata_language = metadata_resolution.metadata_language_default(
+        None if is_anonymous else request.user,
+        show_item,
+    )
+
     tv_with_seasons_metadata = services.get_media_metadata(
         "tv_with_seasons",
         media_id,
         source,
         [season_number],
+        language=metadata_language,
+        user=None if is_anonymous else request.user,
     )
     season_key = f"season/{season_number}"
     season_metadata = tv_with_seasons_metadata.get(season_key) or {}
@@ -919,7 +983,12 @@ def episode_details(
     episode_metadata = {}
     if source == Sources.TMDB.value:
         with contextlib.suppress(Exception):
-            episode_metadata = tmdb.episode(media_id, season_number, episode_number)
+            episode_metadata = tmdb.episode(
+                media_id,
+                season_number,
+                episode_number,
+                language=metadata_language,
+            )
 
     episode_item_qs = Item.objects.filter(
         media_id=media_id,
@@ -1156,7 +1225,7 @@ def music_bulk_save(request):
             )
             return response
         messages.error(request, gettext("Start and end dates are required."))
-        return redirect(request.POST.get("return_url") or "/")
+        return redirect(helpers.safe_return_url(request, request.POST.get("return_url")))
 
     try:
         first_season_number = int(request.POST["first_season_number"])
@@ -1176,7 +1245,7 @@ def music_bulk_save(request):
             )
             return response
         messages.error(request, gettext("Invalid track range."))
-        return redirect(request.POST.get("return_url") or "/")
+        return redirect(helpers.safe_return_url(request, request.POST.get("return_url")))
 
     track_count = max(int(request.POST.get("episode_count") or 0), 0)
     write_mode = request.POST.get("write_mode", "add")
@@ -1226,7 +1295,44 @@ def music_bulk_save(request):
         request,
         gettext("Adding plays to %(value_1)s tracks.") % {"value_1": track_count},
     )
-    return redirect(request.POST.get("return_url") or "/")
+    return redirect(helpers.safe_return_url(request, request.POST.get("return_url")))
+
+
+def _create_manual_podcast_show(request, form):
+    """Create a manual podcast as a show plus the user's show tracker.
+
+    Podcasts are tracked at the show level (PodcastShow/PodcastShowTracker), so
+    a custom entry has to create those instead of the legacy per-episode Item
+    and Podcast rows the generic manual path would otherwise produce.
+    """
+    updated_request = request.POST.copy()
+    updated_request["show_id"] = "0"
+    tracker_form = PodcastShowTrackerForm(updated_request, user=request.user)
+
+    if not tracker_form.is_valid():
+        logger.error(tracker_form.errors.as_json())
+        helpers.form_error_messages(tracker_form, request)
+        return redirect("create_entry")
+
+    item = form.save()
+    show = PodcastShow.objects.create(
+        podcast_uuid=item.media_id,
+        source=Sources.MANUAL.value,
+        title=item.title,
+        image=item.image or "",
+        description=item.synopsis or "",
+    )
+
+    tracker = tracker_form.save(commit=False)
+    tracker.user = request.user
+    tracker.show = show
+    tracker.save()
+
+    msg = gettext("%(value_1)s added successfully.") % {"value_1": item}
+    messages.success(request, msg)
+    logger.info(msg)
+
+    return redirect("create_entry")
 
 
 @require_http_methods(["GET", "POST"])
@@ -1250,6 +1356,9 @@ def create_entry(request):
         logger.error(form.errors.as_json())
         helpers.form_error_messages(form, request)
         return redirect("create_entry")
+
+    if form.cleaned_data["media_type"] == MediaTypes.PODCAST.value:
+        return _create_manual_podcast_show(request, form)
 
     # Try to save the item
     try:
@@ -2182,6 +2291,7 @@ __all__ = [
     "collection_remove_season",
     "collection_status_api",
     "collection_update",
+    "collection_update_season",
     "comicvine",
     "config",
     "create_album_from_search",
@@ -2233,6 +2343,7 @@ __all__ = [
     "music_album_details",
     "music_artist_details",
     "music_track_details",
+    "music_track_notes",
     "openlibrary",
     "parse_date",
     "person_detail",

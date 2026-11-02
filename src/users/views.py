@@ -1,7 +1,6 @@
 import base64
 import json
 import logging
-import re
 import uuid
 from datetime import timedelta
 from io import BytesIO
@@ -10,32 +9,41 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from allauth.account.views import SignupView
+from allauth.core import ratelimit
 from allauth.socialaccount.views import SignupView as SocialSignupView
 from celery import states
 from django.apps import apps
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import update_session_auth_hash
+from django.contrib.auth import logout, update_session_auth_hash
 from django.contrib.auth.decorators import login_not_required, login_required
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
 from django.http import Http404, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.template.defaultfilters import pluralize
+from django.template.defaultfilters import filesizeformat, pluralize
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.timesince import timesince
 from django.utils.translation import gettext
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_celery_beat.models import PeriodicTask
 from django_celery_results.models import TaskResult
 
 from api import scopes as api_scopes
-from app import cache_utils, history_cache, image_cache, statistics_cache
+from app import (
+    backup_status,
+    cache_utils,
+    history_cache,
+    image_cache,
+    signals,
+    statistics_cache,
+)
 from app import helpers as app_helpers
 from app.discover.feeds import get_external_row_definitions
 from app.discover.registry import DISCOVER_MEDIA_TYPES
@@ -49,12 +57,14 @@ from app.models import (
     Music,
     MusicReleasePreference,
     Status,
+    Tag,
 )
 from app.providers import credentials, tmdb
 from app.templatetags import app_tags
 from config import run_state
-from integrations import exports, plex, seerr_api, stremio_catalog, tasks
+from integrations import exports, mal_sync, plex, seerr_api, stremio_catalog, tasks
 from integrations.imports import plex as plex_import
+from integrations.imports import psn as psn_import
 from integrations.imports import trakt as trakt_imports
 from integrations.imports.helpers import periodic_task_user_kwargs
 from integrations.models import (
@@ -70,7 +80,7 @@ from integrations.models import (
 )
 from integrations.plex_watchlist import WATCHLIST_TASK_NAME
 from users import appearance as appearance_config
-from users import cache_management
+from users import cache_management, helpers, release_notes
 from users.forms import (
     AuthenticatorSetupForm,
     NotificationSettingsForm,
@@ -258,20 +268,25 @@ def _get_stored_plex_account(user):
 
 def _get_import_data_user(user):
     """Load the Import Data page's account relations in a single query."""
-    return user._meta.model.objects.select_related(
-        "plex_account",
-        "audiobookshelf_account",
-        "kavita_account",
-        "komga_account",
-        "pocketcasts_account",
-        "lastfm_account",
-        "koito_account",
-    ).prefetch_related(
-        "radarr_instances",
-        "sonarr_instances",
-        "mylar_instances",
-        "kapowarr_instances",
-    ).get(pk=user.pk)
+    return (
+        user._meta.model.objects.select_related(
+            "plex_account",
+            "audiobookshelf_account",
+            "kavita_account",
+            "komga_account",
+            "pocketcasts_account",
+            "lastfm_account",
+            "koito_account",
+            "mal_account",
+        )
+        .prefetch_related(
+            "radarr_instances",
+            "sonarr_instances",
+            "mylar_instances",
+            "kapowarr_instances",
+        )
+        .get(pk=user.pk)
+    )
 
 
 def _refresh_cached_plex_sections(
@@ -329,6 +344,61 @@ def _build_qr_data_uri(provisioning_uri: str) -> str:
     return f"data:image/png;base64,{encoded_png}"
 
 
+def _last_active_superuser(user):
+    """Return True when ``user`` is the only active superuser left."""
+    return (
+        user.is_superuser
+        and not User.objects.filter(is_superuser=True, is_active=True)
+        .exclude(pk=user.pk)
+        .exists()
+    )
+
+
+def _delete_own_account(request):
+    """Permanently delete the signed-in user after re-checking their identity."""
+    user = request.user
+    if user.is_demo:
+        messages.error(request, "This section is view-only for demo accounts.")
+        return redirect("account")
+    limited = ratelimit.consume_or_429(request, action="reauthenticate")
+    if limited is not None:
+        return limited
+    if _last_active_superuser(user):
+        messages.error(
+            request,
+            "You are the only superuser. Promote another account before deleting this one.",
+        )
+        return redirect("account")
+    if request.POST.get("confirm_delete") != "on":
+        messages.error(request, "Tick the box to confirm.")
+        return redirect("account")
+
+    # Accounts without a usable password (third-party sign-in) confirm by
+    # typing their username instead.
+    if user.has_usable_password():
+        confirmed = user.check_password(request.POST.get("current_password", ""))
+        error = "That password is not correct."
+    else:
+        confirmed = request.POST.get("confirm_username", "") == user.username
+        error = "Type your username exactly to confirm."
+    if not confirmed:
+        logger.warning("Failed account deletion confirmation for user: %s", user.pk)
+        messages.error(request, error)
+        return redirect("account")
+
+    user_id = user.pk
+    username = user.username
+    # Scheduled syncs and imports hold only the user's id, so the cascade
+    # delete would leave them behind to fail on every run.
+    with transaction.atomic(), signals.deleting_account():
+        PeriodicTask.objects.filter(**periodic_task_user_kwargs(user_id)).delete()
+        user.delete()
+    logout(request)
+    logger.info("Account deleted by its owner: %s (id %s)", username, user_id)
+    messages.success(request, "Your account and all its data have been deleted.")
+    return redirect("account_login")
+
+
 @require_http_methods(["GET", "POST"])
 def account(request):
     """Update the user's account and account security settings."""
@@ -341,6 +411,34 @@ def account(request):
 
     if request.method == "POST":
         action = request.POST.get("action", "")
+
+        if action in {
+            "enable_authenticator",
+            "start_authenticator_setup",
+            "disable_authenticator",
+            "regenerate_recovery_codes",
+        }:
+            # The demo password is public: an authenticator attached to it
+            # would let one visitor reset the password for everyone else.
+            if request.user.is_demo:
+                messages.error(request, "This section is view-only for demo accounts.")
+                return redirect("account")
+            limited = ratelimit.consume_or_429(request, action="reauthenticate")
+            if limited is not None:
+                return limited
+            if action != "regenerate_recovery_codes":
+                confirmation = RegenerateRecoveryCodesForm(
+                    request.POST, user=request.user
+                )
+                if not confirmation.is_valid():
+                    messages.error(
+                        request,
+                        "Enter your current password to change authenticator recovery.",
+                    )
+                    return redirect("account")
+
+        if action == "delete_account":
+            return _delete_own_account(request)
 
         if "username" in request.POST:
             user_form = UserUpdateForm(request.POST, instance=request.user)
@@ -462,6 +560,7 @@ def account(request):
             used_at__isnull=True
         ).count(),
         "fresh_recovery_codes": fresh_recovery_codes,
+        "is_last_superuser": _last_active_superuser(request.user),
     }
 
     return render(request, "users/account.html", context)
@@ -474,6 +573,15 @@ def password_recover(request):
     form = PasswordRecoveryForm()
 
     if request.method == "POST":
+        # This custom flow does not pass through allauth's reset view. Apply
+        # its per-IP and per-account limits before checking short TOTP codes.
+        limited = ratelimit.consume_or_429(
+            request,
+            action="reset_password",
+            key=request.POST.get("username", "").strip().casefold(),
+        )
+        if limited is not None:
+            return limited
         form = PasswordRecoveryForm(request.POST)
         if form.is_valid():
             user = form.save()
@@ -717,7 +825,7 @@ def apply_media_type_preferences(
 
 @require_http_methods(["GET", "POST"])
 def sidebar(request):
-    """Render the sidebar settings page (media types visibility and UI preferences)."""
+    """Render the sidebar settings page (media type visibility and order)."""
     media_types = SIDEBAR_MEDIA_TYPES
 
     if request.method == "POST":
@@ -727,12 +835,6 @@ def sidebar(request):
             return redirect("sidebar")
 
         fields_to_update = []
-
-        # Handle clickable_media_cards preference
-        clickable_media_cards = request.POST.get("clickable_media_cards") == "on"
-        if request.user.clickable_media_cards != clickable_media_cards:
-            request.user.clickable_media_cards = clickable_media_cards
-            fields_to_update.append("clickable_media_cards")
 
         show_discover = request.POST.get("show_discover") == "on"
         if request.user.show_discover != show_discover:
@@ -788,20 +890,13 @@ def home_screen(request):
             messages.error(request, str(exc))
         else:
             fields_to_update = []
-            show_media_type_headers = (
-                request.POST.get("show_media_type_headers") == "1"
-            )
-            if (
-                request.user.home_show_media_type_headers
-                != show_media_type_headers
-            ):
+            show_media_type_headers = request.POST.get("show_media_type_headers") == "1"
+            if request.user.home_show_media_type_headers != show_media_type_headers:
                 request.user.home_show_media_type_headers = show_media_type_headers
                 fields_to_update.append("home_show_media_type_headers")
 
             if request.POST.get("home_media_type_chips_present") is not None:
-                chips_enabled = (
-                    request.POST.get("home_media_type_chips_enabled") == "1"
-                )
+                chips_enabled = request.POST.get("home_media_type_chips_enabled") == "1"
                 chip_style = request.POST.get("home_media_type_chip_style")
                 submitted_colors = {
                     media_type: request.POST.get(
@@ -813,9 +908,7 @@ def home_screen(request):
                 chip_colors = normalize_media_type_chip_colors(
                     request.user.home_media_type_chip_colors
                 )
-                chip_colors.update(
-                    normalize_media_type_chip_colors(submitted_colors)
-                )
+                chip_colors.update(normalize_media_type_chip_colors(submitted_colors))
 
                 if request.user.home_media_type_chips_enabled != chips_enabled:
                     request.user.home_media_type_chips_enabled = chips_enabled
@@ -851,9 +944,7 @@ def home_screen(request):
         )
 
     context = {
-        "home_screen_sections_json": json.dumps(
-            sections, cls=DjangoJSONEncoder
-        ),
+        "home_screen_sections_json": json.dumps(sections, cls=DjangoJSONEncoder),
         "show_media_type_headers": request.user.home_show_media_type_headers,
         "media_type_chip_styles": (
             ("solid", "Solid"),
@@ -896,9 +987,7 @@ def home_screen_filter_fields(request):
     at a time.
     """
     media_type = request.GET.get("media_type", "")
-    allowed_media_types = get_home_configurable_media_types(
-        request.user, include_disabled_season=False
-    )
+    allowed_media_types = get_home_configurable_media_types(request.user)
     if media_type not in allowed_media_types:
         raise Http404
     return JsonResponse(
@@ -983,7 +1072,11 @@ def toggle_obfuscate_episodes(request):
         user.obfuscate_episodes = not user.obfuscate_episodes
         user.save(update_fields=["obfuscate_episodes"])
     return redirect(
-        request.POST.get("next") or request.META.get("HTTP_REFERER") or "home"
+        app_helpers.safe_return_url(
+            request,
+            request.POST.get("next") or request.META.get("HTTP_REFERER"),
+            reverse("home"),
+        )
     )
 
 
@@ -1095,7 +1188,13 @@ def cards(request, media_type=None):
         request.user.card_metadata = parse_card_metadata(
             request.POST.get("card_metadata")
         )
-        request.user.save(update_fields=["card_metadata"])
+        fields = ["card_metadata"]
+        if "clickable_media_cards" in request.POST:
+            request.user.clickable_media_cards = (
+                request.POST.get("clickable_media_cards") == "on"
+            )
+            fields.append("clickable_media_cards")
+        request.user.save(update_fields=fields)
         messages.success(request, "Media cards updated")
         return _cards_redirect(media_type)
     if media_type is None:
@@ -1144,6 +1243,8 @@ def cards_preview(request):
         draft_payload = {}
     if "types" not in draft_payload and media_type in draft_payload:
         draft_payload = {"version": 1, "types": {media_type: draft_payload}}
+    if request.method == "POST" and isinstance(body.get("clickable_media_cards"), bool):
+        request.user.clickable_media_cards = body["clickable_media_cards"]
     request.user.card_metadata = parse_card_metadata(draft_payload)
     sample = _card_preview_sample(request.user, media_type)
     if sample is None:
@@ -1193,6 +1294,7 @@ def _card_preview_stand_in(media_type):
         "media_id": "card-preview",
         "year": 2024,
         "genres": ["Drama", "Thriller"],
+        "platforms": ["PC"],
         "runtime": "42 min",
         "synopsis": "A short sample line so this field has something to show.",
         "season_number": 1,
@@ -1216,7 +1318,9 @@ def _card_preview_stand_in(media_type):
         aggregated_status="In progress",
         last_played_at=timezone.now(),
         is_statusless=False,
-        end_date=None,
+        created_at=timezone.now() - timedelta(days=30),
+        start_date=timezone.now() - timedelta(days=14),
+        end_date=timezone.now() - timedelta(days=2),
         aggregated_end_date=None,
         next_event=None,
         card_tile_url="",
@@ -1490,6 +1594,16 @@ def preferences(request):
             request.user.time_format = time_format
             fields_to_update.append("time_format")
 
+        currency = request.POST.get("currency")
+        if (
+            currency
+            and currency
+            in [choice[0] for choice in User._meta.get_field("currency").choices]
+            and request.user.currency != currency
+        ):
+            request.user.currency = currency
+            fields_to_update.append("currency")
+
         week_start_day = request.POST.get("week_start_day")
         if (
             week_start_day and week_start_day in WeekStartDayChoices.values
@@ -1623,23 +1737,23 @@ def preferences(request):
                 )
                 fields_to_update.append("book_comic_manga_progress_percentage")
 
-        provider_region = request.POST.get("watch_provider_region", "")
-        if provider_region in [region[0] for region in watch_provider_regions]:
+        provider_region = request.POST.get("watch_provider_region")
+        if provider_region is not None:
+            if provider_region not in {region[0] for region in watch_provider_regions}:
+                provider_region = "UNSET"
             if request.user.watch_provider_region != provider_region:
                 request.user.watch_provider_region = provider_region
                 fields_to_update.append("watch_provider_region")
-        elif request.user.watch_provider_region != "UNSET":
-            request.user.watch_provider_region = "UNSET"
-            fields_to_update.append("watch_provider_region")
 
-        metadata_language = request.POST.get("metadata_language", "")
-        if metadata_language in {choice[0] for choice in metadata_language_choices}:
+        metadata_language = request.POST.get("metadata_language")
+        if metadata_language is not None:
+            if metadata_language not in {
+                choice[0] for choice in metadata_language_choices
+            }:
+                metadata_language = ""
             if request.user.metadata_language != metadata_language:
                 request.user.metadata_language = metadata_language
                 fields_to_update.append("metadata_language")
-        elif request.user.metadata_language != "":
-            request.user.metadata_language = ""
-            fields_to_update.append("metadata_language")
 
         session_duration = request.POST.get("session_duration")
         if session_duration is not None:
@@ -1657,6 +1771,10 @@ def preferences(request):
         if fields_to_update:
             request.user.save(update_fields=fields_to_update)
             request.user.refresh_from_db()
+            if "metadata_language" in fields_to_update:
+                from app.tasks_metadata_language import reset_metadata_language_repair
+
+                reset_metadata_language_repair(request.user.pk)
             if rating_scale_changed:
                 history_cache.invalidate_history_cache(
                     request.user.id,
@@ -1675,9 +1793,9 @@ def preferences(request):
                     debounce_seconds=0,
                 )
         success_message = (
-            "Settings updated successfully."
+            gettext("Settings updated successfully.")
             if "media_types_checkboxes" in request.POST
-            else "Preferences updated successfully."
+            else gettext("Preferences updated successfully.")
         )
         messages.success(request, success_message)
         return redirect("preferences")
@@ -1693,6 +1811,7 @@ def preferences(request):
         "ui_language_choices": UiLanguageChoices.choices,
         "session_duration_choices": SessionDurationChoices.choices,
         "week_start_day_choices": WeekStartDayChoices.choices,
+        "currency_choices": User._meta.get_field("currency").choices,
     }
 
     return render(request, "users/preferences.html", context)
@@ -1710,7 +1829,11 @@ def convert_anime_library(request):
         "Converting your existing anime. This runs in the background; titles "
         "that cannot be converted safely are left as they are.",
     )
-    return redirect("preferences")
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("metadata_settings")
+        )
+    )
 
 
 @login_required
@@ -1719,22 +1842,52 @@ def convert_tv_library(request):
     """Move this user's tracked TV shows to their default TV provider."""
     from app.tasks_tv_provider_migration import move_user_tv_library_task
 
-    # Moving is also the user's go-ahead for the nightly job to keep new shows
-    # on their default provider.
-    request.user.tv_auto_move_to_default_provider = True
-    request.user.save(update_fields=["tv_auto_move_to_default_provider"])
     move_user_tv_library_task.delay(request.user.id)
     messages.success(
         request,
         "Moving your tracked TV shows. This runs in the background; shows that "
         "cannot be moved safely are left as they are.",
     )
-    return redirect("metadata_settings")
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("metadata_settings")
+        )
+    )
+
+
+@login_required
+@require_POST
+def repair_duplicate_anime_libraries(request):
+    """Fold this user's duplicate Anime/TV tracking rows back together."""
+    from app.tasks_anime_library_repair import repair_duplicated_anime_libraries_task
+
+    repair_duplicated_anime_libraries_task.delay(user_id=request.user.id)
+    messages.success(
+        request,
+        "Repairing duplicated anime libraries. This runs in the background; "
+        "shows that cannot be merged safely are left untouched.",
+    )
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("metadata_settings")
+        )
+    )
 
 
 @require_GET
 def integrations(request):
     """Render the integrations settings page."""
+    return render(
+        request,
+        "users/integrations.html",
+        integrations_context(request, include_tokens=True),
+    )
+
+
+def integrations_context(
+    request, slug=None, *, include_tokens=False, refresh_plex=True
+):
+    """Build existing integration controls, scoped to a provider when requested."""
     from integrations.state import settings_view
     from integrations.webhooks.jellyfin import jellyfin_template_outdated
 
@@ -1749,8 +1902,8 @@ def integrations(request):
     plex_library_options: list[dict] = []
     selected_plex_webhook_libraries: list[str] = []
 
-    if plex_account and plex_account.plex_token:
-        if _should_refresh_plex_sections(plex_account):
+    if (slug is None or slug == "plex") and plex_account and plex_account.plex_token:
+        if refresh_plex and _should_refresh_plex_sections(plex_account):
             tasks.refresh_plex_sections.delay(user.id)
 
         sections = plex_account.sections or []
@@ -1794,6 +1947,7 @@ def integrations(request):
     match_review_references = list(
         ExternalReference.objects.filter(
             user=user,
+            **({"integration": slug} if slug else {}),
             review_status=ExternalReferenceReviewStatus.NEEDS_REVIEW.value,
         )
         .select_related("matched_item", "corrected_item")
@@ -1802,6 +1956,7 @@ def integrations(request):
     match_saved_references = list(
         ExternalReference.objects.filter(
             user=user,
+            **({"integration": slug} if slug else {}),
             review_status__in=(
                 ExternalReferenceReviewStatus.CORRECTED.value,
                 ExternalReferenceReviewStatus.IGNORED.value,
@@ -1823,38 +1978,60 @@ def integrations(request):
         .order_by("username")
     )
 
-    return render(
-        request,
-        "users/integrations.html",
-        {
-            "user": user,
-            "sync_bindings": settings_view.binding_rows(user),
-            "sync_conflicts": settings_view.open_conflicts(user),
-            "plex_webhook_needs_update": plex_webhook_needs_update,
-            "jellyfin_template_outdated": jellyfin_template_outdated(user.id),
-            "plex_library_options_json": json.dumps(plex_library_options),
-            "plex_library_options": plex_library_options,
-            "selected_plex_webhook_libraries_json": json.dumps(
-                selected_plex_webhook_libraries
-            ),
-            "plex_webhook_shares": plex_webhook_shares,
-            "received_plex_webhook_shares": received_plex_webhook_shares,
-            "match_review_references": match_review_references,
-            "match_saved_references": match_saved_references,
-            "plex_share_recipients": plex_share_recipients,
-            "plex_connected": bool(plex_account and plex_account.plex_token),
-            "jellyfin_account": jellyfin_account,
-            "jellyfin_playback_reporting_import": jellyfin_playback_reporting_import,
-            "jellyfin_pull_interval_minutes": tasks.JELLYFIN_PULL_INTERVAL_MINUTES,
-            "seerr_global_webhook_enabled": bool(settings.SEERR_GLOBAL_WEBHOOK_SECRET),
-            # Popped, not read: the secret is shown once and never again.
-            "new_integration_token": request.session.pop(
-                NEW_TOKEN_SESSION_KEY,
-                None,
-            ),
-            **integration_token_context(user),
-        },
-    )
+    context = {
+        "user": user,
+        "sync_bindings": settings_view.binding_rows(user),
+        "sync_conflicts": settings_view.open_conflicts(user),
+        "plex_webhook_needs_update": plex_webhook_needs_update,
+        "jellyfin_template_outdated": jellyfin_template_outdated(user.id),
+        "plex_library_options_json": json.dumps(plex_library_options),
+        "plex_library_options": plex_library_options,
+        "selected_plex_webhook_libraries_json": json.dumps(
+            selected_plex_webhook_libraries
+        ),
+        "plex_webhook_shares": plex_webhook_shares,
+        "received_plex_webhook_shares": received_plex_webhook_shares,
+        "match_review_references": match_review_references,
+        "match_saved_references": match_saved_references,
+        "plex_share_recipients": plex_share_recipients,
+        "plex_connected": bool(plex_account and plex_account.plex_token),
+        "jellyfin_account": jellyfin_account,
+        "jellyfin_playback_reporting_import": jellyfin_playback_reporting_import,
+        "jellyfin_pull_interval_minutes": tasks.JELLYFIN_PULL_INTERVAL_MINUTES,
+        "seerr_global_webhook_enabled": bool(settings.SEERR_GLOBAL_WEBHOOK_SECRET),
+        # Popped, not read: the secret is shown once and never again.
+        "new_integration_token": request.session.pop(NEW_TOKEN_SESSION_KEY, None)
+        if include_tokens
+        else None,
+        **(integration_token_context(user) if include_tokens else {}),
+    }
+    if slug == "stremio" and not include_tokens:
+        context["catalog_grants"] = list(
+            CatalogGrant.objects.filter(
+                user=user,
+                revoked_at__isnull=True,
+            ).order_by("-created_at"),
+        )
+    if slug:
+        context["sync_bindings"] = [
+            row for row in context["sync_bindings"] if row["client_kind"] == slug
+        ]
+        context["sync_conflicts"] = [
+            conflict
+            for conflict in context["sync_conflicts"]
+            if conflict.binding.client_kind == slug
+        ]
+        context["match_review_references"] = [
+            reference
+            for reference in match_review_references
+            if reference.integration == slug
+        ]
+        context["match_saved_references"] = [
+            reference
+            for reference in match_saved_references
+            if reference.integration == slug
+        ]
+    return context
 
 
 STREMIO_CATALOG_STATUS_CACHE_SECONDS = 120
@@ -1921,9 +2098,8 @@ def _decorate_plex_sections(sections, plex_account):
     return decorated
 
 
-@require_GET
-def import_data(request):
-    """Render the import data settings page."""
+def import_data_context(request):
+    """Build the existing import controls without running an import."""
     user = _get_import_data_user(request.user)
     plex_account = _get_stored_plex_account(user)
     plex_sections = _decorate_plex_sections(
@@ -1953,6 +2129,9 @@ def import_data(request):
 
     # Get Last.fm account
     lastfm_account = getattr(user, "lastfm_account", None)
+
+    # Get MyAnimeList sync account
+    mal_account = getattr(user, "mal_account", None)
 
     # Get Koito account
     koito_account = getattr(user, "koito_account", None)
@@ -2034,11 +2213,17 @@ def import_data(request):
     if not trakt_redirect_capable:
         trakt_redirect_uri = trakt_imports.TRAKT_OOB_REDIRECT_URI
 
-    context = {
+    return {
         "user": user,
         "plex_account": plex_account,
         "plex_sections": plex_sections,
         "plex_sections_json": json.dumps(plex_sections),
+        "steam_import_tooltip": {
+            "label": gettext("Steam ID help"),
+            "text": gettext(
+                "Find your Steam ID on your account details page. Your profile must be public if the API key is not linked to that Steam ID."
+            ),
+        },
         "audiobookshelf_account": audiobookshelf_account,
         "komga_account": komga_account,
         "kavita_account": kavita_account,
@@ -2050,6 +2235,8 @@ def import_data(request):
         "pocketcasts_account": pocketcasts_account,
         "gpodder_account": gpodder_account,
         "lastfm_account": lastfm_account,
+        "mal_account": mal_account,
+        "mal_sync_configured": mal_sync.is_sync_configured(user),
         "koito_account": koito_account,
         "radarr_instances": radarr_instances,
         "sonarr_instances": sonarr_instances,
@@ -2062,6 +2249,7 @@ def import_data(request):
         "stremio_account": stremio_account,
         "xbox_account": xbox_account,
         "psn_account": psn_account,
+        "psn_sync_hours": psn_import.SYNC_EVERY_HOURS,
         "lastfm_periodic_task": lastfm_periodic_task,
         "lastfm_poll_interval": lastfm_poll_interval,
         "lastfm_history_status_label": lastfm_history_status_label,
@@ -2073,10 +2261,7 @@ def import_data(request):
         "koito_history_can_start": koito_history_can_start,
         "koito_history_button_label": koito_history_button_label,
         "hardcover_personal_key": credentials.has_user_value("hardcover", user),
-        "trakt_configured": bool(
-            credentials.get("trakt", "client_id")
-            and credentials.get("trakt", "client_secret"),
-        ),
+        "trakt_configured": bool(credentials.get("trakt", "client_id")),
         "trakt_redirect_uri": trakt_redirect_uri,
         "trakt_redirect_capable": trakt_redirect_capable,
         "simkl_configured": credentials.is_configured("simkl", user),
@@ -2085,7 +2270,12 @@ def import_data(request):
             reverse("import_simkl_private"),
         ),
     }
-    return render(request, "users/import_data.html", context)
+
+
+@require_GET
+def import_data(request):
+    """Render the import data settings page."""
+    return render(request, "users/import_data.html", import_data_context(request))
 
 
 @login_required
@@ -2098,6 +2288,25 @@ def save_import_settings(request):
     frequency = request.POST.get("import_frequency", "")
     time_val = request.POST.get("import_time", "")
     mode = request.POST.get("import_mode", "")
+    watchlist_status = request.POST.get("watchlist_status")
+    watchlist_tag = request.POST.get("watchlist_tag")
+    clz_status = request.POST.get("clz_wishlist_status")
+    clz_tag = request.POST.get("clz_wishlist_tag")
+    if clz_status is not None and clz_status and clz_status not in Status.values:
+        return HttpResponse(status=400)
+    if (
+        clz_tag is not None
+        and len(clz_tag.strip())
+        > request.user._meta.get_field("clz_wishlist_tag").max_length
+    ):
+        return HttpResponse(status=400)
+    if watchlist_status is not None and watchlist_status not in Status.values:
+        return HttpResponse(status=400)
+    if watchlist_tag and (
+        not watchlist_tag.isdecimal()
+        or not Tag.objects.filter(user=request.user, pk=watchlist_tag).exists()
+    ):
+        return HttpResponse(status=400)
 
     fields = []
     if frequency in ImportFrequencyChoices.values:
@@ -2109,6 +2318,21 @@ def save_import_settings(request):
     if mode in ImportModeChoices.values:
         request.user.import_mode = mode
         fields.append("import_mode")
+    if watchlist_status is not None:
+        request.user.watchlist_import_status = watchlist_status
+        fields.append("watchlist_import_status")
+    if watchlist_tag is not None:
+        request.user.watchlist_import_tag_id = (
+            int(watchlist_tag) if watchlist_tag else None
+        )
+        fields.append("watchlist_import_tag")
+
+    if clz_status is not None:
+        request.user.clz_wishlist_status = clz_status
+        fields.append("clz_wishlist_status")
+    if clz_tag is not None:
+        request.user.clz_wishlist_tag = " ".join(clz_tag.split())
+        fields.append("clz_wishlist_tag")
 
     if fields:
         request.user.save(update_fields=fields)
@@ -2120,13 +2344,46 @@ def save_import_settings(request):
 def import_data_activity(request):
     """Render import schedules and history after the page loads."""
     user = _get_import_data_user(request.user)
+    from users.provider_catalog import activity_sources, catalog
+
+    source = request.GET.get("source", "")
+    if source and source not in {item["slug"] for item in catalog()}:
+        return HttpResponse(status=404)
+    sources = activity_sources(source) if source else None
+    import_tasks = user.get_import_tasks()
+    runs = ImportRun.objects.filter(user=user)
+    if sources:
+        import_tasks = {
+            key: [entry for entry in entries if entry["source"] in sources]
+            for key, entries in import_tasks.items()
+        }
+        runs = runs.filter(source__in=sources)
+    import_runs = list(runs.order_by("-started_at")[:10])
+    is_active = any(
+        result["status"] in {states.PENDING, states.STARTED}
+        for result in import_tasks["results"]
+    ) or any(run.status == "running" for run in import_runs)
+    # The per-media-type counts scan the tables an active import is writing to,
+    # so while one runs the poll reuses the last summary instead of recounting.
+    cache_key = f"import_source_media:{user.pk}"
+    source_media = cache.get(cache_key) if is_active else None
+    if source_media is None:
+        source_media = _import_source_media_summary(user)
+        cache.set(cache_key, source_media, timeout=3600)
+    if sources:
+        source_media = [entry for entry in source_media if entry["source"] in sources]
     context = {
         "user": user,
-        "import_tasks": user.get_import_tasks(),
-        "import_runs": ImportRun.objects.filter(user=user).order_by("-started_at")[:10],
-        "import_source_media": _import_source_media_summary(user),
+        "import_tasks": import_tasks,
+        "import_runs": import_runs,
+        "import_source_media": source_media,
+        "provider_navigation": bool(sources),
     }
-    return render(request, "users/components/import_activity.html", context)
+    response = render(request, "users/components/import_activity.html", context)
+    if not is_active:
+        # htmx stops polling on 286 (still swaps); starting an import reloads the page.
+        response.status_code = 286
+    return response
 
 
 @require_GET
@@ -2199,13 +2456,14 @@ def _backup_dir_status(user):
     Creates the directory if missing so it's browsable even before any export
     has run.
     """
-    backup_dir = Path(settings.BACKUP_DIR) / str(user.username)
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir = exports.backup_directory(user)
     file_count = sum(1 for entry in backup_dir.iterdir() if entry.is_file())
     return {
         "path": str(backup_dir),
         "file_count": file_count,
         "host_reachable": _mount_is_host_reachable(backup_dir),
+        "destination": backup_status.destination_check(backup_dir),
+        "freshness": backup_status.freshness(backup_status.CSV_EXPORT),
     }
 
 
@@ -2229,34 +2487,239 @@ def _db_snapshot_status():
     written by app.tasks_db_backup.write_database_snapshot, so the same page
     that explains CSV export can show whether a real database backup exists.
     """
+    if not settings.USING_SQLITE_DATABASE:
+        # PostgreSQL backups are operator-managed; Floppy cannot vouch for them.
+        return {"supported": False}
     snapshot_dir = Path(settings.BACKUP_DIR) / "database"
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    file_count = sum(1 for entry in snapshot_dir.iterdir() if entry.is_file())
+    snapshot_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    file_count = sum(
+        1
+        for entry in snapshot_dir.glob("*.sqlite3")
+        if entry.is_file() and not entry.is_symlink() and not entry.name.startswith(".")
+    )
     return {
+        "supported": True,
         "path": str(snapshot_dir),
         "file_count": file_count,
         "host_reachable": _mount_is_host_reachable(snapshot_dir),
         "enabled": settings.DB_SNAPSHOT_ENABLED,
+        "destination": backup_status.destination_check(snapshot_dir),
+        "freshness": backup_status.freshness(backup_status.SNAPSHOT),
     }
 
 
-@require_GET
-def export_data(request):
-    """Render the export data settings page."""
+def _age_text(seconds):
+    return (
+        timesince(timezone.now() - timedelta(seconds=seconds))
+        if seconds is not None
+        else ""
+    )
+
+
+def _freshness_lines(freshness, destination):
+    """Server-translated freshness lines; liveness is never reported as freshness."""
+    lines = []
+    if freshness["last_success_age_seconds"] is not None:
+        lines.append(
+            {
+                "tone": "muted",
+                "text": gettext("Last successful backup: %(name)s, %(age)s ago.")
+                % {
+                    "name": freshness["last_success_name"] or "",
+                    "age": _age_text(freshness["last_success_age_seconds"]),
+                },
+            },
+        )
+    else:
+        lines.append(
+            {"tone": "warning", "text": gettext("No successful backup recorded yet.")}
+        )
+    if freshness["last_failure_age_seconds"] is not None:
+        lines.append(
+            {
+                "tone": "warning" if freshness["failing"] else "muted",
+                "text": gettext("Last failure: %(age)s ago. %(error)s")
+                % {
+                    "age": _age_text(freshness["last_failure_age_seconds"]),
+                    "error": freshness["last_failure"] or "",
+                },
+            },
+        )
+    if not destination["writable"]:
+        lines.append(
+            {"tone": "warning", "text": gettext("The backup folder is not writable.")}
+        )
+    elif destination["free_bytes"] is not None:
+        lines.append(
+            {
+                "tone": "muted",
+                "text": gettext("%(free)s free in the backup folder.")
+                % {"free": filesizeformat(destination["free_bytes"])},
+            },
+        )
+    return lines
+
+
+def backup_panel_props(backup, snapshot):
+    """Sections for the shared BackupStatus component."""
+    sections = [
+        {
+            "id": "csv",
+            "intro": gettext("Scheduled exports save to:"),
+            "path": backup["path"],
+            "lines": _freshness_lines(backup["freshness"], backup["destination"]),
+        },
+    ]
+    if not snapshot["supported"]:
+        sections.append(
+            {
+                "id": "snapshot",
+                "intro": gettext(
+                    "PostgreSQL database backups are not managed by Floppy. "
+                    "Configure and test pg_dump/pg_restore separately.",
+                ),
+                "path": "",
+                "lines": [],
+            },
+        )
+    else:
+        lines = (
+            _freshness_lines(snapshot["freshness"], snapshot["destination"])
+            if snapshot["enabled"]
+            else [
+                {
+                    "tone": "warning",
+                    "text": gettext(
+                        "Disabled: set DB_SNAPSHOT_ENABLED=true to enable."
+                    ),
+                }
+            ]
+        )
+        sections.append(
+            {
+                "id": "snapshot",
+                "intro": gettext(
+                    "Database snapshot (same-host recovery point) saved to:"
+                ),
+                "path": snapshot["path"],
+                "lines": lines,
+            },
+        )
+    return sections
+
+
+def export_data_context(request):
+    """Return the existing file export and backup controls."""
     media_types = [
         mt.value
         for mt in MediaTypes
         if mt.value not in (MediaTypes.EPISODE.value, MediaTypes.SEASON.value)
     ]
     export_tasks = request.user.get_export_tasks()
-    context = {
+    backup = _backup_dir_status(request.user)
+    db_snapshot_status = _db_snapshot_status()
+    return {
         "user": request.user,
         "media_types": media_types,
         "export_tasks": export_tasks,
-        "backup_status": _backup_dir_status(request.user),
-        "db_snapshot_status": _db_snapshot_status(),
+        "backup_status": backup,
+        "db_snapshot_status": db_snapshot_status,
+        "backup_panel": backup_panel_props(backup, db_snapshot_status),
     }
-    return render(request, "users/export_data.html", context)
+
+
+@require_GET
+def export_data(request):
+    """Render the export data settings page."""
+    return render(request, "users/export_data.html", export_data_context(request))
+
+
+def _outbound_state(account):
+    """Badge state for an outbound service account: off, waiting, attention or connected."""
+    if account is None:
+        return "off"
+    if getattr(account, "is_pending", False):
+        return "waiting"
+    if not getattr(account, "is_connected", True) and not account.connection_broken:
+        return "off"
+    if account.connection_broken or account.last_error_message:
+        return "attention"
+    return "connected"
+
+
+def mal_export_context(request, slug=None):
+    """Return existing outbound settings, scoped to a provider when requested."""
+    from integrations.tmdb_views import rating_sync_status
+    from integrations.wetrakr_views import wetrakr_status
+
+    user = request.user
+    context = {"user": user, "outbound_services": []}
+    if slug in (None, "mal", "myanimelist"):
+        mal_account = getattr(user, "mal_account", None)
+        schedule = None
+        periodic_task = (
+            PeriodicTask.objects.filter(
+                Q(kwargs__contains=f'"user_id": {user.id},')
+                | Q(kwargs__contains=f'"user_id": {user.id}' + "}"),
+                task=tasks.MAL_FULL_SYNC_TASK_NAME,
+            )
+            .select_related("crontab")
+            .first()
+        )
+        if periodic_task:
+            schedule_info = helpers.get_export_next_run_info(periodic_task)
+            if schedule_info:
+                schedule = {
+                    "task": periodic_task,
+                    "last_run": periodic_task.last_run_at,
+                    "next_run": schedule_info["next_run"],
+                    "frequency": schedule_info["frequency"],
+                }
+        context.update(
+            {
+                "mal_account": mal_account,
+                "mal_sync_configured": mal_sync.is_sync_configured(user),
+                "mal_export_schedule": schedule,
+                "mal_sync_initial": mal_sync.full_sync_report(mal_account)
+                if mal_account
+                else None,
+                "mal_ignored_mappings": mal_sync.ignored_mappings(user)
+                if mal_account
+                else [],
+                "mal_manual_mappings": mal_sync.manual_episode_mappings(user)
+                if mal_account
+                else [],
+            }
+        )
+    if slug in (None, "tmdb"):
+        tmdb_sync = rating_sync_status(user)
+        context["tmdb_rating_sync"] = tmdb_sync
+        context["outbound_services"].append(
+            {
+                "slug": "tmdb",
+                "description": gettext("Ratings"),
+                "state": _outbound_state(tmdb_sync["account"]),
+                "body": "users/components/tmdb_rating_sync.html",
+            }
+        )
+    if slug in (None, "wetrakr"):
+        wetrakr_sync = wetrakr_status(user)
+        context["wetrakr_sync"] = wetrakr_sync
+        context["outbound_services"].append(
+            {
+                "slug": "wetrakr",
+                "description": gettext("Plays, statuses and ratings"),
+                "state": _outbound_state(wetrakr_sync["account"]),
+                "body": "users/components/wetrakr_sync.html",
+            }
+        )
+    return context
+
+
+@require_GET
+def mal_export(request):
+    """Render the Sync to Trackers page: MyAnimeList, TMDb and WeTrakr."""
+    return render(request, "users/mal_export.html", mal_export_context(request))
 
 
 @require_GET
@@ -2344,11 +2807,17 @@ def export_logs(request):
     container this runs in may already be short of memory. After floppy.log come
     the process manager's log and any crash tracebacks (see config.run_state).
     """
+    if not request.user.is_superuser:
+        return HttpResponse(status=403)
+
     from app.log_safety import redact_secrets
 
     log_name = Path(settings.LOG_FILE).name
     sections = [(log_name, _log_files(log_name))]
-    sections += [(n, _log_files(n)) for n in ("supervisord.log", "faulthandler.log")]
+    sections += [
+        (n, _log_files(n))
+        for n in ("restart-history.log", "supervisord.log", "faulthandler.log")
+    ]
 
     def lines():
         for title, found in sections:
@@ -2369,6 +2838,27 @@ def export_logs(request):
 
 
 @require_GET
+def whats_new(request):
+    """Render the release notes fragment the About page loads in the background."""
+    installed = release_notes.release_tag(settings.VERSION)
+    releases = release_notes.get_releases()
+    for release in releases or []:
+        release["installed"] = release["tag"] == installed
+        release["newer"] = release_notes.tag_sort_key(
+            release["tag"],
+        ) > release_notes.tag_sort_key(installed)
+    return render(
+        request,
+        "users/components/whats_new.html",
+        {
+            "releases": releases,
+            "installed": installed,
+            "releases_url": release_notes.RELEASES_PAGE_URL,
+        },
+    )
+
+
+@require_GET
 def about(request):
     """Render the about page."""
     return render(
@@ -2382,15 +2872,16 @@ def about(request):
     )
 
 
-def _import_source_media_summary(user):
+def _import_source_media_summary(user, sources=None):
     """Return media type/source/count rows the user has importer-tagged data for."""
     summary = []
     for media_type in MediaTypes.values:
         if media_type == MediaTypes.EPISODE.value:
             continue
         model = apps.get_model(app_label="app", model_name=media_type)
+        scope = {"import_run__source__in": sources} if sources is not None else {}
         rows = (
-            model.objects.filter(user=user, import_run__isnull=False)
+            model.objects.filter(user=user, import_run__isnull=False, **scope)
             .values("import_run__source")
             .annotate(count=Count("id"))
             .order_by("import_run__source")
@@ -2416,11 +2907,19 @@ def bulk_delete_by_import_source(request, media_type, source):
     """
     if media_type == MediaTypes.EPISODE.value or media_type not in MediaTypes.values:
         messages.error(request, "Unknown media type.")
-        return redirect("import_data")
+        return redirect(
+            app_helpers.safe_return_url(
+                request, request.POST.get("next"), reverse("import_data")
+            )
+        )
 
     if not ImportRun.objects.filter(user=request.user, source=source).exists():
         messages.error(request, "Unknown import source.")
-        return redirect("import_data")
+        return redirect(
+            app_helpers.safe_return_url(
+                request, request.POST.get("next"), reverse("import_data")
+            )
+        )
 
     # A running import writes Music rows and re-creates trackers as it goes, so
     # deleting underneath it leaves rows the sweep has already walked past.
@@ -2434,7 +2933,11 @@ def bulk_delete_by_import_source(request, media_type, source):
             request,
             "Cancel the running import from this source before deleting it.",
         )
-        return redirect("import_data")
+        return redirect(
+            app_helpers.safe_return_url(
+                request, request.POST.get("next"), reverse("import_data")
+            )
+        )
 
     model = apps.get_model(app_label="app", model_name=media_type)
     doomed = model.objects.filter(user=request.user, import_run__source=source)
@@ -2457,7 +2960,11 @@ def bulk_delete_by_import_source(request, media_type, source):
         messages.success(request, f"Permanently deleted {deleted_count} item(s).")
     else:
         messages.info(request, "Nothing to delete.")
-    return redirect("import_data")
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("import_data")
+        )
+    )
 
 
 # Cap on ids per `__in` lookup. A >100k-scrobble library can reference more
@@ -2763,7 +3270,11 @@ def cancel_import_run(request, run_id):
 
     if run.status != ImportRun.Status.RUNNING:
         messages.error(request, "This import is not running.")
-        return redirect("import_data")
+        return redirect(
+            app_helpers.safe_return_url(
+                request, request.POST.get("next"), reverse("import_data")
+            )
+        )
 
     if run.task_id:
         celery_app.control.revoke(run.task_id, terminate=True)
@@ -2775,7 +3286,11 @@ def cancel_import_run(request, run_id):
     )
     _reset_history_import_status(request.user, run.source)
     messages.success(request, "Import cancelled.")
-    return redirect("import_data")
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("import_data")
+        )
+    )
 
 
 def _reset_history_import_status(user, source):
@@ -2852,7 +3367,11 @@ def cancel_pending_import(request, task_id):
             "This import is no longer queued. A running import can be cancelled "
             "from Recent Import Runs.",
         )
-        return redirect("import_data")
+        return redirect(
+            app_helpers.safe_return_url(
+                request, request.POST.get("next"), reverse("import_data")
+            )
+        )
 
     already_started = AsyncResult(task_id).status == states.STARTED
     celery_app.control.revoke(task_id, terminate=already_started)
@@ -2868,7 +3387,11 @@ def cancel_pending_import(request, task_id):
         )
     _reset_history_import_status(request.user, pending["source"])
     messages.success(request, "Import cancelled.")
-    return redirect("import_data")
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("import_data")
+        )
+    )
 
 
 @require_POST
@@ -2887,7 +3410,11 @@ def rollback_import_run(request, run_id):
 
     if run.status == ImportRun.Status.RUNNING:
         messages.error(request, "Cancel the import before rolling it back.")
-        return redirect("import_data")
+        return redirect(
+            app_helpers.safe_return_url(
+                request, request.POST.get("next"), reverse("import_data")
+            )
+        )
 
     rollback_media_types = [
         media_type
@@ -2916,25 +3443,16 @@ def rollback_import_run(request, run_id):
         messages.success(request, f"Undo complete: {' and '.join(parts)}.")
     else:
         messages.info(request, "Nothing to remove for this import.")
-    return redirect("import_data")
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("import_data")
+        )
+    )
 
 
 def _task_belongs_to_user(task, user):
-    """Return whether a periodic task's kwargs name exactly this user.
-
-    A plain substring test reads `"user_id": 1` out of `"user_id": 11`, so
-    the id has to be anchored on the delimiter that follows it. Quoting and
-    spacing vary with how the kwargs were written.
-    """
-    if not task.kwargs:
-        return False
-
-    return bool(
-        re.search(
-            rf"""['"]user_id['"]:\s*{user.id}\s*[,}}]""",
-            task.kwargs,
-        ),
-    )
+    """Verify the parsed owner, including legacy Python-repr task kwargs."""
+    return helpers.task_kwargs_belong_to_user(task.kwargs, user.pk)
 
 
 @require_POST
@@ -2945,7 +3463,11 @@ def delete_import_schedule(request):
         task = PeriodicTask.objects.get(name=task_name)
     except PeriodicTask.DoesNotExist:
         messages.error(request, "Import schedule not found.")
-        return redirect("import_data")
+        return redirect(
+            app_helpers.safe_return_url(
+                request, request.POST.get("next"), reverse("import_data")
+            )
+        )
 
     # Last.fm polling is a single shared task covering every connected
     # user (it has no per-user kwargs), so it can never match the
@@ -2954,11 +3476,19 @@ def delete_import_schedule(request):
     if task.task == "Poll Last.fm for all users":
         LastFMAccount.objects.filter(user=request.user).delete()
         messages.info(request, "Disconnected Last.fm.")
-        return redirect("import_data")
+        return redirect(
+            app_helpers.safe_return_url(
+                request, request.POST.get("next"), reverse("import_data")
+            )
+        )
 
     if not _task_belongs_to_user(task, request.user):
         messages.error(request, "Import schedule not found.")
-        return redirect("import_data")
+        return redirect(
+            app_helpers.safe_return_url(
+                request, request.POST.get("next"), reverse("import_data")
+            )
+        )
 
     if task.task == WATCHLIST_TASK_NAME:
         PlexAccount.objects.filter(user=request.user).update(
@@ -2970,7 +3500,11 @@ def delete_import_schedule(request):
         )
     task.delete()
     messages.success(request, "Import schedule deleted.")
-    return redirect("import_data")
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("import_data")
+        )
+    )
 
 
 @require_POST
@@ -3141,7 +3675,9 @@ def create_catalog_grant(request):
     name = (request.POST.get("name") or "").strip()[:MAX_TOKEN_NAME_LENGTH]
     if not name:
         messages.error(request, "Give the install a name so you can recognise it.")
-        return redirect("integrations")
+        return redirect(
+            reverse("provider_detail", args=["stremio"]) + "?tab=connection"
+        )
 
     allow_playback_start = request.POST.get("allow_playback_start") == "on"
     grant, _token = CatalogGrant.generate(
@@ -3150,7 +3686,7 @@ def create_catalog_grant(request):
         allow_playback_start=allow_playback_start,
     )
     messages.success(request, f"Created add-on install '{grant.name}'.")
-    return redirect("integrations")
+    return redirect(reverse("provider_detail", args=["stremio"]) + "?tab=connection")
 
 
 @require_POST
@@ -3165,7 +3701,7 @@ def revoke_catalog_grant(request, grant_id):
     grant.revoked_at = timezone.now()
     grant.save(update_fields=["revoked_at"])
     messages.success(request, f"Revoked add-on install '{grant.name}'.")
-    return redirect("integrations")
+    return redirect(reverse("provider_detail", args=["stremio"]) + "?tab=connection")
 
 
 @require_POST
@@ -3174,13 +3710,13 @@ def create_integration_token(request):
     name = (request.POST.get("name") or "").strip()[:MAX_TOKEN_NAME_LENGTH]
     if not name:
         messages.error(request, "Give the token a name so you can recognise it later.")
-        return redirect("integrations")
+        return redirect("access_tokens")
 
     requested = request.POST.getlist("scopes")
     scopes = [scope for scope in requested if scope in api_scopes.ALL_SCOPES]
     if not scopes:
         messages.error(request, "Select at least one permission for the token.")
-        return redirect("integrations")
+        return redirect("access_tokens")
 
     expires_at = None
     raw_expiry = (request.POST.get("expires_in_days") or "").strip()
@@ -3189,10 +3725,10 @@ def create_integration_token(request):
             days = int(raw_expiry)
         except ValueError:
             messages.error(request, "Expiry must be a number of days.")
-            return redirect("integrations")
+            return redirect("access_tokens")
         if days < 1:
             messages.error(request, "Expiry must be at least one day.")
-            return redirect("integrations")
+            return redirect("access_tokens")
         expires_at = timezone.now() + timedelta(days=days)
 
     token, raw_token = IntegrationToken.generate(
@@ -3207,7 +3743,7 @@ def create_integration_token(request):
         "secret": raw_token,
     }
     messages.success(request, f"Created token '{token.name}'.")
-    return redirect("integrations")
+    return redirect("access_tokens")
 
 
 @require_POST
@@ -3222,7 +3758,7 @@ def revoke_integration_token(request, token_id):
     token.revoked_at = timezone.now()
     token.save(update_fields=["revoked_at"])
     messages.success(request, f"Revoked token '{token.name}'.")
-    return redirect("integrations")
+    return redirect("access_tokens")
 
 
 @require_POST
@@ -3235,14 +3771,18 @@ def regenerate_token(request):
             break
         except IntegrityError:
             continue
-    return redirect("integrations")
+    return redirect("access_tokens")
 
 
 @require_POST
 def update_plex_usernames(request):
     """Update the Plex usernames for the user."""
     usernames = request.POST.get("plex_usernames", "")
-    redirect_target = request.POST.get("next") or "integrations"
+    redirect_target = app_helpers.safe_return_url(
+        request,
+        request.POST.get("next"),
+        reverse("provider_detail", args=["plex"]) + "?tab=tracking",
+    )
 
     username_list = [u.strip() for u in usernames.split(",") if u.strip()]
 
@@ -3265,22 +3805,32 @@ def update_plex_usernames(request):
 @require_POST
 def update_plex_mark_watched(request):
     """Turn the Plex manual watched-mark sync on or off for the user."""
+    redirect_target = app_helpers.safe_return_url(
+        request,
+        request.POST.get("next"),
+        reverse("provider_detail", args=["plex"]) + "?tab=import",
+    )
     account = getattr(request.user, "plex_account", None)
     if not account:
         messages.error(request, "Connect Plex before changing this setting.")
-        return redirect("integrations")
+        return redirect(redirect_target)
 
     plex_import.set_mark_watched_sync(
         account,
         enabled="plex_mark_watched_enabled" in request.POST,
     )
     messages.success(request, "Plex watched settings updated successfully")
-    return redirect("integrations")
+    return redirect(redirect_target)
 
 
 @require_POST
 def update_jellyfin_webhook_events(request):
     """Update optional Jellyfin webhook event handling for the user."""
+    redirect_target = app_helpers.safe_return_url(
+        request,
+        request.POST.get("next"),
+        reverse("provider_detail", args=["jellyfin"]) + "?tab=tracking",
+    )
     request.user.jellyfin_mark_played_enabled = (
         "jellyfin_mark_played_enabled" in request.POST
     )
@@ -3295,7 +3845,19 @@ def update_jellyfin_webhook_events(request):
     )
     messages.success(request, "Jellyfin webhook settings updated successfully")
 
-    return redirect("integrations")
+    return redirect(redirect_target)
+
+
+@require_POST
+def update_group_scrobbled_anime(request):
+    """Toggle converting flat MAL anime to per-episode tracking on scrobble."""
+    request.user.group_scrobbled_anime = request.POST.get("enabled") == "true"
+    request.user.save(update_fields=["group_scrobbled_anime"])
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("provider_activity")
+        )
+    )
 
 
 def _plex_library_values(account):
@@ -3313,11 +3875,16 @@ def _plex_library_values(account):
 @require_POST
 def update_plex_webhook_share(request):
     """Create or update one owner-managed Plex webhook share."""
+    redirect_target = app_helpers.safe_return_url(
+        request,
+        request.POST.get("next"),
+        reverse("provider_detail", args=["plex"]) + "?tab=tracking",
+    )
     user = request.user
     plex_account = getattr(user, "plex_account", None)
     if not plex_account or not plex_account.plex_token:
         messages.error(request, "Connect Plex before sharing its webhook.")
-        return redirect("integrations")
+        return redirect(redirect_target)
 
     share_id = request.POST.get("plex_webhook_share_id")
     if share_id:
@@ -3337,7 +3904,7 @@ def update_plex_webhook_share(request):
         )
         if recipient == user:
             messages.error(request, "You cannot share a Plex webhook with yourself.")
-            return redirect("integrations")
+            return redirect(redirect_target)
         share = PlexWebhookShare(owner=user, recipient=recipient)
 
     submitted_usernames = [
@@ -3355,7 +3922,7 @@ def update_plex_webhook_share(request):
 
     if not plex_usernames:
         messages.error(request, "Enter one or more Plex usernames for this share.")
-        return redirect("integrations")
+        return redirect(redirect_target)
 
     duplicate_usernames = {username.casefold() for username in plex_usernames}
     existing_shares = (
@@ -3376,7 +3943,7 @@ def update_plex_webhook_share(request):
             request,
             "One or more Plex usernames are already assigned to another shared profile.",
         )
-        return redirect("integrations")
+        return redirect(redirect_target)
 
     valid_library_values = _plex_library_values(plex_account)
     selected_libraries = []
@@ -3390,7 +3957,7 @@ def update_plex_webhook_share(request):
     invalid_libraries = set(selected_libraries) - valid_library_values
     if invalid_libraries:
         messages.error(request, "One or more selected Plex libraries are invalid.")
-        return redirect("integrations")
+        return redirect(redirect_target)
 
     share.plex_username = ", ".join(plex_usernames)
     share.allowed_libraries = (
@@ -3403,12 +3970,17 @@ def update_plex_webhook_share(request):
         request,
         f"Plex webhook shared with {recipient.username}. They must enable it from Integrations.",
     )
-    return redirect("integrations")
+    return redirect(redirect_target)
 
 
 @require_POST
 def toggle_plex_webhook_share(request):
     """Enable or disable a received Plex webhook share."""
+    redirect_target = app_helpers.safe_return_url(
+        request,
+        request.POST.get("next"),
+        reverse("provider_detail", args=["plex"]) + "?tab=tracking",
+    )
     share = get_object_or_404(
         PlexWebhookShare.objects.select_related("owner"),
         pk=request.POST.get("plex_webhook_share_id"),
@@ -3419,7 +3991,7 @@ def toggle_plex_webhook_share(request):
         owner_account = getattr(share.owner, "plex_account", None)
         if not owner_account or not owner_account.plex_token:
             messages.error(request, "The Plex owner is not currently connected.")
-            return redirect("integrations")
+            return redirect(redirect_target)
 
     share.recipient_enabled = enabled
     share.save(update_fields=["recipient_enabled", "updated_at"])
@@ -3427,12 +3999,17 @@ def toggle_plex_webhook_share(request):
         request,
         "Shared Plex webhook enabled." if enabled else "Shared Plex webhook disabled.",
     )
-    return redirect("integrations")
+    return redirect(redirect_target)
 
 
 @require_POST
 def delete_plex_webhook_share(request):
     """Revoke one owner-managed Plex webhook share."""
+    redirect_target = app_helpers.safe_return_url(
+        request,
+        request.POST.get("next"),
+        reverse("provider_detail", args=["plex"]) + "?tab=tracking",
+    )
     share = get_object_or_404(
         PlexWebhookShare,
         pk=request.POST.get("plex_webhook_share_id"),
@@ -3441,13 +4018,17 @@ def delete_plex_webhook_share(request):
     recipient_name = share.recipient.username
     share.delete()
     messages.success(request, f"Plex webhook access revoked for {recipient_name}.")
-    return redirect("integrations")
+    return redirect(redirect_target)
 
 
 @require_POST
 def update_plex_webhook_libraries(request):
     """Update selected Plex libraries allowed for webhook events."""
-    redirect_target = request.POST.get("next") or "integrations"
+    redirect_target = app_helpers.safe_return_url(
+        request,
+        request.POST.get("next"),
+        reverse("provider_detail", args=["plex"]) + "?tab=tracking",
+    )
     selected_libraries = request.POST.getlist("plex_webhook_libraries")
 
     deduplicated_libraries: list[str] = []
@@ -3485,6 +4066,11 @@ def update_plex_webhook_libraries(request):
 @require_POST
 def update_jellyseerr_settings(request):
     """Update Seerr integration settings for the current user."""
+    redirect_target = app_helpers.safe_return_url(
+        request,
+        request.POST.get("next"),
+        reverse("provider_detail", args=["seerr"]) + "?tab=tracking",
+    )
     user = request.user
 
     # kept: reads/writes the unrenamed jellyseerr_* model fields
@@ -3529,7 +4115,13 @@ def update_jellyseerr_settings(request):
                 + ". Valid: "
                 + ", ".join(sorted(valid_seerr_statuses)),
             )
-            return redirect(request.META.get("HTTP_REFERER", "/settings/integrations"))
+            return redirect(
+                app_helpers.safe_return_url(
+                    request,
+                    request.POST.get("next") or request.META.get("HTTP_REFERER"),
+                    reverse("provider_detail", args=["seerr"]) + "?tab=tracking",
+                ),
+            )
         trigger_statuses = ",".join(tokens)
     else:
         # Blank means "default behaviour" (processor skips UNKNOWN)
@@ -3555,7 +4147,7 @@ def update_jellyseerr_settings(request):
         parsed = urlparse(seerr_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             messages.error(request, "Seerr URL must be an http(s) address.")
-            return redirect("integrations")
+            return redirect(redirect_target)
     raw_api_key = (request.POST.get("seerr_api_key") or "").strip()
     seerr_username = (request.POST.get("seerr_username") or "").strip()
     seerr_user_id = None
@@ -3573,8 +4165,10 @@ def update_jellyseerr_settings(request):
         seerr_user_id = user.seerr_user_id
     elif seerr_url:
         if not seerr_username:
-            messages.error(request, "A Seerr username is required to request from Seerr.")
-            return redirect("integrations")
+            messages.error(
+                request, "A Seerr username is required to request from Seerr."
+            )
+            return redirect(redirect_target)
         try:
             api_key = raw_api_key or decrypt_or_raise(user.seerr_api_key)
             seerr_user_id = seerr_api.SeerrClient(seerr_url, api_key).find_user_id(
@@ -3582,7 +4176,7 @@ def update_jellyseerr_settings(request):
             )
         except (seerr_api.SeerrError, MediaImportError) as error:
             messages.error(request, f"Seerr settings not saved: {error}")
-            return redirect("integrations")
+            return redirect(redirect_target)
 
     # Save
     user.jellyseerr_enabled = enabled
@@ -3611,7 +4205,13 @@ def update_jellyseerr_settings(request):
     )
 
     messages.success(request, "Seerr settings saved.")
-    return redirect(request.META.get("HTTP_REFERER", "/settings/integrations"))
+    return redirect(
+        app_helpers.safe_return_url(
+            request,
+            request.POST.get("next") or request.META.get("HTTP_REFERER"),
+            reverse("provider_detail", args=["seerr"]) + "?tab=tracking",
+        ),
+    )
 
 
 @require_POST
@@ -3709,21 +4309,28 @@ def clear_all_caches(request):
 
 @require_POST
 def update_tmdb_proxy(request):
-    """Update or clear the user's TMDB outbound proxy URL."""
+    """Update or clear the instance-wide TMDB outbound proxy URL for superusers."""
+    if not request.user.is_superuser:
+        return HttpResponse(status=403)
+    from app.providers.services import TMDB_PROXY_CACHE_KEY
     from integrations.imports.helpers import encrypt
 
     proxy_url = request.POST.get("tmdb_proxy_url", "").strip()
 
     request.user.tmdb_proxy_url = encrypt(proxy_url) if proxy_url else ""
     request.user.save(update_fields=["tmdb_proxy_url"])
-    cache.delete("tmdb_proxy_url")
+    cache.delete(TMDB_PROXY_CACHE_KEY)
 
     messages.success(
         request,
         "TMDB proxy updated successfully" if proxy_url else "TMDB proxy removed",
     )
 
-    return redirect("advanced")
+    return redirect(
+        app_helpers.safe_return_url(
+            request, request.POST.get("next"), reverse("advanced")
+        )
+    )
 
 
 # Form fields that describe the save request itself, not the media list view.

@@ -29,9 +29,16 @@ from integrations.imports.helpers import MediaImportError, decrypt_or_raise
 
 logger = logging.getLogger(__name__)
 
+ENTRY_SOURCE = "gpodder"
+
 MIN_SIGNIFICANT_PROGRESS_SECONDS = 60
 DUPLICATE_COMPLETION_WINDOW_SECONDS = 300
 FULL_RESYNC_INTERVAL = timedelta(hours=24)
+
+
+def show_key_for_feed(normalized_feed):
+    """Return the stable podcast_uuid Floppy uses for a GPodder feed URL."""
+    return f"gp_{hashlib.md5(normalized_feed.encode(), usedforsecurity=False).hexdigest()}"
 
 
 def importer(identifier, user, mode):
@@ -417,6 +424,7 @@ class GPodderImporter:
             return False
 
         Podcast.objects.create(
+            entry_source=ENTRY_SOURCE,
             user=self.user,
             item=item,
             show=show,
@@ -520,7 +528,7 @@ class GPodderImporter:
         return candidates
 
     def _show_key(self, normalized_feed):
-        return f"gp_{hashlib.md5(normalized_feed.encode(), usedforsecurity=False).hexdigest()}"
+        return show_key_for_feed(normalized_feed)
 
     def _parse_action_timestamp(self, action):
         timestamp = action.get("timestamp")

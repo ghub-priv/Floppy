@@ -16,6 +16,7 @@ from django.utils import timezone
 from app import cache_safety, history_cache
 from app.interactive_requests import interactive_request_active
 from app.models import MediaTypes
+from app.providers import credentials
 from app.task_cooperation import CooperativeRun
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,10 @@ def refresh_discover_rows(
     except Exception:
         release_row_refresh(user_id, media_type, row_keys, show_more)
         raise
+    # The user object is for the tab rebuild only; the result goes to the
+    # Celery result backend as JSON, on every return path.
+    user = result.pop("user", None)
+    rebuild_tab = result.pop("rebuild_tab", None)
     # Keep the higher-level tab cache aligned with refreshed row caches, unless
     # another row refresh for this tab is still queued: that one rebuilds it.
     if not release_row_refresh(user_id, media_type, row_keys, show_more):
@@ -48,15 +53,15 @@ def refresh_discover_rows(
             ",".join(row_keys),
         )
         return result
-    if result.pop("rebuild_tab", None):
-        _rebuild_tab_after_rows(result["user"], result["media_type"], show_more)
-    result.pop("user", None)
+    if rebuild_tab:
+        _rebuild_tab_after_rows(user, result["media_type"], show_more)
     return result
 
 
 def _refresh_rows(user_id, media_type, row_keys, show_more):
     from app.discover import tab_cache as discover_tab_cache
     from app.discover.service import refresh_rows_for_user
+    from app.discover.service_helpers import credit_maps_scope
 
     user_model = get_user_model()
     user = user_model.objects.filter(id=user_id).first()
@@ -82,9 +87,13 @@ def _refresh_rows(user_id, media_type, row_keys, show_more):
         )
         return {"refreshed": 0, "reason": "disabled_media_type", "user_id": user_id}
 
-    refreshed = refresh_rows_for_user(
-        user, requested_media_type, row_keys, show_more=show_more
-    )
+    with credentials.current_user_scope(user), credit_maps_scope():
+        refreshed = refresh_rows_for_user(
+            user,
+            requested_media_type,
+            row_keys,
+            show_more=show_more,
+        )
     return {
         "refreshed": refreshed,
         "user_id": user_id,
@@ -98,7 +107,10 @@ def _rebuild_tab_after_rows(user, media_type, show_more):
     from app.discover.service import stale_refresh_suppressed
     from app.discover.tab_cache import refresh_tab_cache
 
-    with stale_refresh_suppressed():
+    with (
+        credentials.current_user_scope(user),
+        stale_refresh_suppressed(),
+    ):
         refresh_tab_cache(
             user,
             media_type,
@@ -169,13 +181,14 @@ def refresh_discover_tab_cache(
         )
         return {"refreshed": False, "reason": "already_fresh", "user_id": user_id}
 
-    rows = refresh_tab_cache(
-        user,
-        requested_media_type,
-        show_more=show_more,
-        force=force,
-        clear_provider_cache=clear_provider_cache,
-    )
+    with credentials.current_user_scope(user):
+        rows = refresh_tab_cache(
+            user,
+            requested_media_type,
+            show_more=show_more,
+            force=force,
+            clear_provider_cache=clear_provider_cache,
+        )
     return {
         "refreshed": True,
         "row_count": len(rows),
@@ -393,6 +406,16 @@ def refresh_discover_profiles(
         "users_count": len(selected),
         "media_types": target_media_types,
     }
+
+
+@shared_task(name="Purge expired Discover caches", ignore_result=True)
+def purge_expired_discover_caches():
+    """Bound durable Discover cache tables by deleting long-expired rows."""
+    from app.discover import cache_repo
+
+    deleted = cache_repo.purge_expired_caches()
+    logger.info("discover_cache_purge deleted=%s", deleted)
+    return deleted
 
 
 @shared_task(name="Warm Discover API Cache")

@@ -66,6 +66,11 @@
           return ['parentSeason', 'image', 'episodeNumber', 'endDate'].includes(field);
         }
 
+        // Podcasts are tracked at the show level, which has no progress field
+        else if (this.mediaType === 'podcast') {
+          return ['title', 'image', 'score', 'status', 'startDate', 'endDate', 'notes', 'synopsis'].includes(field);
+        }
+
         // Movie, Anime, Manga, Game, Book fields
         else {
           return ['title', 'image', 'score', 'progress', 'status', 'startDate', 'endDate', 'notes', 'synopsis'].includes(field);

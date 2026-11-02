@@ -100,6 +100,21 @@ class ImportDispatchTests(FloppyApiTestCase):
         self.addCleanup(discard_staged_upload, queued)
         self.assertTrue(queued.endswith(".csv"))
 
+    @patch("api.fork_views_integrations.tasks.import_youtube_takeout.delay")
+    def test_youtube_takeout_dispatch(self, mock_delay):
+        """The YouTube Takeout history takes a JSON upload."""
+        mock_delay.return_value.id = "yt-task-1"
+        upload = io.BytesIO(b"[]")
+        upload.name = "watch-history.json"
+        response = self.client.post(
+            reverse("api_import_dispatch", args=("youtube-takeout",)),
+            {"file": upload, "mode": "new"},
+            **self.auth_headers,
+        )
+        self.assertEqual(response.status_code, HTTP.ACCEPTED)
+        self.assertEqual(response.json()["task_id"], "yt-task-1")
+        self.addCleanup(discard_staged_upload, mock_delay.call_args.kwargs["file"])
+
     def test_file_missing_rejected(self):
         """File services without an upload return 400."""
         response = self.call_api(

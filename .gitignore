@@ -64,3 +64,15 @@ dump.rdb
 # Local agent session state; not part of the application or PR.
 .v2c/
 .video_agent/
+# The wiki is an independent repository; historical review notes stay private.
+/wiki/
+/*_AUDIT.md
+/*_FOLLOWUP.md
+/*_REVIEW.md
+/*_CLOSEOUT.md
+
+# Temporary agent storage (see AGENTS.md Documentation Policy)
+/docs/plans/
+
+# App-generated database backups (BACKUP_DIR default)
+/src/backups/

@@ -8,11 +8,12 @@
 {% if media.score_count is not None or trakt_score or imdb_score or mal_score or opencritic_score or user_medias and current_instance and not public_view|default:False and user.ratings_enabled %}
   <div class="detail-score-card-shell order-2 mt-0 mb-5 w-full sm:order-1 sm:mt-4"
        x-data="{ hasOverflow: false, atStart: true, atEnd: true, updateScroll() { const row = this.$refs.scoreRow; this.hasOverflow = row.scrollWidth > row.clientWidth + 2; this.atStart = row.scrollLeft < 2; this.atEnd = row.scrollLeft + row.clientWidth >= row.scrollWidth - 2 } }"
-       x-init="$nextTick(() => updateScroll())"
+       x-init="$nextTick(() => { updateScroll(); new ResizeObserver(() => updateScroll()).observe($refs.scoreRow) })"
        @resize.window.debounce.100ms="updateScroll()"
        @htmx:afterSwap.window="$nextTick(() => updateScroll())">
   <div class="detail-score-card-row flex w-full items-center justify-start gap-2 sm:flex-wrap"
        x-ref="scoreRow"
+       :class="{ 'detail-score-card-row--fade-left': hasOverflow && !atStart, 'detail-score-card-row--fade-right': hasOverflow && !atEnd }"
        @scroll.passive="updateScroll(); $dispatch('detail-score-row-scroll')">
     {% if media_type == MediaTypes.TV.value or media_type == MediaTypes.SEASON.value %}
       {% include "app/components/detail_progress_card_slot.html" with media=media media_type=media_type current_instance=current_instance public_view=public_view only %}
@@ -93,7 +94,7 @@
           {% if media_type == MediaTypes.TV.value or media_type == MediaTypes.SEASON.value or media_type == MediaTypes.ANIME.value %}<span class="detail-provider-score-card__prompt">{% translate "View series graph" %}</span></button>{% else %}</div>{% endif %}
         </div>
         {% if media_type == MediaTypes.TV.value or media_type == MediaTypes.SEASON.value or media_type == MediaTypes.ANIME.value %}
-          {# The modal content polls /api/trakt-series-graph/ only while mounted. #}
+          {# The modal content polls /api/trakt-series-graph/ only while the modal is open. #}
           <template x-teleport="body">
           <div x-show="graphOpen" @click.self="graphOpen = false"
                x-cloak
@@ -105,6 +106,9 @@
                 {% if trakt_url %}<a href="{{ trakt_url }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-2 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm font-medium text-[var(--color-text)] hover:bg-rose-500/20"><img src="{% static 'img/trakt-logo.svg' %}" alt="" aria-hidden="true" class="h-4 w-4 object-contain">{% translate "Trakt" %}</a>{% endif %}
                 <button type="button" @click="graphOpen = false" aria-label="{% translate 'Close Series Graph' %}" class="rounded-lg p-2 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]">{% include "app/icons/x.svg" with classes="h-5 w-5" %}</button>
               </div>
+              {# x-if mounts the poller only while open; htmx does not scan Alpine-inserted DOM, so x-init processes it. Closing removes it and stops polling. #}
+              <template x-if="graphOpen">
+              <div x-init="htmx.process($el)">
               <div id="trakt-series-graph-{{ display_provider }}-{{ media.media_id }}"
                    hx-get="{% url 'trakt_series_graph_fragment' source=display_provider media_id=media.media_id %}"
                    hx-trigger="load delay:300ms, every 5s"
@@ -122,6 +126,8 @@
                 {% translate "Building series graph…" %}
               </div>
               </div>
+              </div>
+              </template>
             </div>
           </div>
           </template>

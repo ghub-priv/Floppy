@@ -10,7 +10,8 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from integrations.models import DEFAULT_INTEGRATION_SCOPES, IntegrationToken
+from integrations.models import IntegrationToken
+from integrations.oauth_scope_info import OAUTH_ALLOWED_SCOPES, OAUTH_SCOPE_OPTIONS
 
 OAUTH_DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 OAUTH_REFRESH_TOKEN_GRANT = "refresh_token"  # noqa: S105
@@ -38,8 +39,8 @@ def default_oauth_grant_types() -> list[str]:
 
 
 def default_oauth_scopes() -> list[str]:
-    """Return a fresh copy of Floppy's supported integration scopes."""
-    return list(DEFAULT_INTEGRATION_SCOPES)
+    """Return a fresh copy of the scopes a public client may request."""
+    return [scope for scope, _label, _description in OAUTH_SCOPE_OPTIONS]
 
 
 def normalise_user_code(user_code: str) -> str:
@@ -95,10 +96,10 @@ class OAuthClient(models.Model):
             dict.fromkeys(
                 allowed_scopes
                 if allowed_scopes is not None
-                else DEFAULT_INTEGRATION_SCOPES
+                else default_oauth_scopes()
             )
         )
-        unknown_scopes = set(scopes) - set(DEFAULT_INTEGRATION_SCOPES)
+        unknown_scopes = set(scopes) - OAUTH_ALLOWED_SCOPES
         if not scopes or unknown_scopes:
             msg = "OAuth clients require one or more supported scopes."
             raise ValueError(msg)

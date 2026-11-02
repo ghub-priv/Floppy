@@ -10,8 +10,8 @@ import logging
 
 import app.providers.mal
 from app.live_playback import (
-    PLAYBACK_SCROBBLE_BUFFER_SECONDS,
     PLAYBACK_SCROBBLE_FALLBACK_SECONDS,
+    PLAYBACK_SCROBBLE_MIN_PROGRESS_RATIO,
 )
 from app.models import MediaTypes, Sources
 
@@ -41,11 +41,17 @@ def is_played(payload):
 
     position = payload.get("position_seconds")
     if position is None:
-        return False
+        # A player that only knows a percentage: the same 90% the live card
+        # treats as a finished title.
+        percent = payload.get("progress_percent")
+        return (
+            percent is not None
+            and percent >= PLAYBACK_SCROBBLE_MIN_PROGRESS_RATIO * 100
+        )
 
     duration = payload.get("duration_seconds")
     if duration:
-        return position >= duration - PLAYBACK_SCROBBLE_BUFFER_SECONDS
+        return position >= duration * PLAYBACK_SCROBBLE_MIN_PROGRESS_RATIO
     return position >= PLAYBACK_SCROBBLE_FALLBACK_SECONDS
 
 
@@ -71,6 +77,9 @@ class GenericScrobbleProcessor(BaseWebhookProcessor):
 
     def _is_played(self, payload):
         return is_played(payload)
+
+    def _is_manual_mark(self, payload):
+        return payload.get("manual") is True
 
     def _get_media_type(self, payload):
         return _MEDIA_TYPE_MAPPING.get(payload.get("media_type"))

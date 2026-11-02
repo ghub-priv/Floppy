@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.db import OperationalError
 from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
@@ -12,20 +13,26 @@ from django.utils import timezone
 
 from app.models import (
     TV,
+    Album,
+    AlbumTracker,
     Anime,
+    Artist,
     Episode,
     Game,
     Item,
     MediaTypes,
     Movie,
+    PodcastShow,
     Season,
     Sources,
     Status,
     Video,
 )
+from app.templatetags.app_tags import item_slot_id
 from lists import smart_rules
 from lists.feeds import FloppyRssFeed
 from lists.models import CustomList, CustomListItem, ListActivity, ListRecommendation
+from lists.views_recommendations import get_or_create_recommendation_item
 from users.models import DateFormatChoices
 
 
@@ -166,6 +173,7 @@ class ListsViewTests(TestCase):
 
     def test_cover_loads_only_first_membership(self):
         """The cover endpoint must not prefetch the entire list."""
+        cache.clear()
         CustomListItem.objects.create(
             custom_list=self.list1,
             item=self.item2,
@@ -186,6 +194,52 @@ class ListsViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(load.call_count, 1)
         self.assertContains(response, self.item1.image)
+
+    def test_warm_covers_render_without_per_card_requests(self):
+        """A repeat hub visit has the resolved URL without another provider call."""
+        cache.clear()
+        self.client.force_login(self.user)
+        cover = "https://image.tmdb.org/t/p/w1280/cover.jpg"
+        with patch.object(
+            CustomList, "_get_tmdb_backdrop", return_value=cover
+        ) as fetch:
+            self.client.get(reverse("list_cover_image", args=[self.list1.id]))
+            response = self.client.get(reverse("lists"))
+            self.client.get(reverse("list_cover_image", args=[self.list1.id]))
+        fetch.assert_called_once()
+        self.assertContains(response, f'src="{cover}"')
+        self.assertNotContains(
+            response, f'hx-get="{reverse("list_cover_image", args=[self.list1.id])}"'
+        )
+
+    def test_cover_cache_changes_with_first_item_or_artwork(self):
+        """Removing the first member or replacing its image cannot reuse its cover."""
+        cache.clear()
+        self.client.force_login(self.user)
+        with patch.object(CustomList, "_get_tmdb_backdrop", return_value=None):
+            self.client.get(reverse("list_cover_image", args=[self.list1.id]))
+        self.item1.image = "https://example.com/replacement.jpg"
+        self.item1.save(update_fields=["image"])
+        response = self.client.get(reverse("lists"))
+        self.assertContains(
+            response, f'hx-get="{reverse("list_cover_image", args=[self.list1.id])}"'
+        )
+        self.list1.items.clear()
+        self.list1.items.add(self.item2)
+        response = self.client.get(reverse("lists"))
+        self.assertContains(
+            response, f'hx-get="{reverse("list_cover_image", args=[self.list1.id])}"'
+        )
+
+    def test_cached_cover_still_checks_visibility(self):
+        """A resolved private cover does not make the fragment public."""
+        cache.clear()
+        self.client.force_login(self.user)
+        with patch.object(CustomList, "_get_tmdb_backdrop", return_value=None):
+            self.client.get(reverse("list_cover_image", args=[self.list1.id]))
+        self.client.logout()
+        response = self.client.get(reverse("list_cover_image", args=[self.list1.id]))
+        self.assertEqual(response.status_code, 403)
 
     @patch.object(get_user_model(), "update_preference")
     def test_lists_view_search_filter(self, mock_update_preference):
@@ -437,11 +491,11 @@ class ListsViewTests(TestCase):
         self.assertEqual(len(response.context["custom_lists"]), 7)  # 7 remaining items
 
     @patch.object(get_user_model(), "update_preference")
-    def test_lists_view_keeps_card_actions_as_edit_buttons(
+    def test_lists_view_keeps_card_actions_in_options_menu(
         self,
         mock_update_preference,
     ):
-        """The list overview should keep card controls as edit buttons only."""
+        """List cards expose Settings and pinning through an options menu."""
         mock_update_preference.return_value = "name"
         self.client.login(**self.credentials)
 
@@ -454,13 +508,15 @@ class ListsViewTests(TestCase):
 
         response = self.client.get(reverse("lists"))
 
-        self.assertContains(response, 'title="Edit list"')
+        self.assertContains(response, 'aria-label="Options for ')
+        self.assertContains(response, "Settings")
+        self.assertNotContains(response, 'title="Edit list"')
         self.assertNotContains(response, reverse("list_add_item", args=[self.list1.id]))
         self.assertNotContains(
             response,
             f"{reverse('list_detail', args=[smart_list.id])}?edit_smart_rules=1",
         )
-        self.assertContains(response, "More list actions")
+        self.assertContains(response, "Pin to sidebar")
 
     @patch.object(get_user_model(), "update_preference")
     def test_lists_view_marks_only_smart_lists_with_badge(
@@ -635,9 +691,7 @@ class ListDetailViewTests(TestCase):
         )
 
     @patch("app.tasks_external_ids.enqueue_external_ids_backfill_items")
-    def test_public_list_queues_backfill_when_tvdb_id_missing(
-        self, mock_enqueue
-    ):
+    def test_public_list_queues_backfill_when_tvdb_id_missing(self, mock_enqueue):
         """Missing TVDB id for a parent show should trigger a best-effort backfill."""
         self.custom_list.visibility = "public"
         self.custom_list.save(update_fields=["visibility"])
@@ -851,8 +905,7 @@ class ListDetailViewTests(TestCase):
         TV.objects.create(item=self.tv_item, status=None, user=self.user)
 
         response = self.client.get(
-            reverse("list_detail", args=[self.custom_list.id])
-            + "?status=no_status",
+            reverse("list_detail", args=[self.custom_list.id]) + "?status=no_status",
         )
 
         self.assertEqual(response.status_code, 200)
@@ -1452,7 +1505,9 @@ class ListDetailViewTests(TestCase):
         ]
         Item.objects.bulk_create(items)
         items = list(
-            Item.objects.filter(media_id__startswith="smart-batch-movie-").order_by("id")
+            Item.objects.filter(media_id__startswith="smart-batch-movie-").order_by(
+                "id"
+            )
         )
         Movie.objects.bulk_create(
             [
@@ -1474,8 +1529,7 @@ class ListDetailViewTests(TestCase):
         )
 
         response = self.client.get(
-            reverse("list_detail", args=[smart_list.public_reference])
-            + "?page=2",
+            reverse("list_detail", args=[smart_list.public_reference]) + "?page=2",
         )
 
         self.assertEqual(response.status_code, 200)
@@ -1679,7 +1733,9 @@ class ListDetailViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "lists/components/list_table.html")
-        self.assertContains(response, 'class="w-full bg-[var(--color-surface)] media-table"')
+        self.assertContains(
+            response, 'class="w-full bg-[var(--color-surface)] media-table"'
+        )
 
     @patch.object(get_user_model(), "update_preference")
     @patch.object(CustomList, "user_can_view")
@@ -1844,12 +1900,16 @@ class ListDetailViewTests(TestCase):
         response = self.client.get(reverse("list_detail", args=[self.custom_list.id]))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["current_layout"], "table")
+        self.assertRegex(response.content.decode(), r'id="items-view"\s+class=""')
 
         response = self.client.get(
             reverse("list_detail", args=[self.custom_list.id]) + "?layout=grid",
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["current_layout"], "grid")
+        self.assertRegex(
+            response.content.decode(), r'id="items-view"\s+class="media-grid"'
+        )
         self.user.refresh_from_db()
         self.assertEqual(self.user.list_detail_layout, "grid")
 
@@ -2019,12 +2079,16 @@ class ListDetailViewTests(TestCase):
         response = self.client.get(reverse("list_detail", args=[smart_list.id]))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["current_layout"], "table")
+        self.assertRegex(response.content.decode(), r'id="items-view"\s+class=""')
 
         response = self.client.get(
             reverse("list_detail", args=[smart_list.id]) + "?layout=grid",
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["current_layout"], "grid")
+        self.assertRegex(
+            response.content.decode(), r'id="items-view"\s+class="media-grid"'
+        )
         self.user.refresh_from_db()
         self.assertEqual(self.user.list_detail_layout, "grid")
 
@@ -2621,7 +2685,9 @@ class ListDetailViewTests(TestCase):
             media_type=MediaTypes.TV.value,
             image=settings.IMG_NONE,
         )
-        tv = TV.objects.create(item=tv_item, user=self.user, status=Status.IN_PROGRESS.value)
+        tv = TV.objects.create(
+            item=tv_item, user=self.user, status=Status.IN_PROGRESS.value
+        )
         season = Season.objects.create(
             item=season_item,
             user=self.user,
@@ -2734,7 +2800,9 @@ class ListDetailViewTests(TestCase):
             media_type=MediaTypes.TV.value,
             image=settings.IMG_NONE,
         )
-        tv = TV.objects.create(item=tv_item, user=self.user, status=Status.IN_PROGRESS.value)
+        tv = TV.objects.create(
+            item=tv_item, user=self.user, status=Status.IN_PROGRESS.value
+        )
         season = Season.objects.create(
             item=season_item,
             user=self.user,
@@ -2751,7 +2819,7 @@ class ListDetailViewTests(TestCase):
 
         response = self.client.get(reverse("list_detail", args=[episode_list.id]))
 
-        self.assertContains(response, f'id="media-card-rating-{episode.id}"')
+        self.assertContains(response, f'id="{item_slot_id("media-card-rating", episode_item)}"')
         self.assertContains(response, ">7.5</span>")
 
     @patch("lists.views.services.get_media_metadata")
@@ -3125,6 +3193,36 @@ class EditListViewTest(TestCase):
         self.assertEqual(self.list.visibility, "public")
         self.assertEqual(self.list.public_slug, "favorite-movies")
 
+    def test_edit_list_invalid_form_reports_errors(self):
+        """An invalid edit is not saved silently; the user sees why."""
+        CustomList.objects.create(name="Other", owner=self.user, public_slug="taken")
+        self.client.login(**self.credentials)
+        response = self.client.post(
+            reverse("list_edit") + "?next=/lists",
+            {
+                "list_id": self.list.id,
+                "name": "Updated List",
+                "is_public": "on",
+                "public_slug": "taken",
+            },
+            follow=True,
+        )
+
+        self.list.refresh_from_db()
+        self.assertEqual(self.list.name, "Test List")
+        self.assertIn(
+            "Public Slug: That URL is already in use.",
+            [str(message) for message in response.context["messages"]],
+        )
+
+    def test_edit_form_fragment_returns_to_lists_page(self):
+        """The lazily fetched modal must not redirect back to its own URL."""
+        self.client.login(**self.credentials)
+        response = self.client.get(reverse("list_edit_form", args=[self.list.id]))
+
+        self.assertContains(response, f'{reverse("list_edit")}?next=/lists"')
+        self.assertNotContains(response, "?next=/list/")
+
 
 class DeleteListViewTest(TestCase):
     """Test the delete view."""
@@ -3293,6 +3391,132 @@ class ListsModalViewTests(TestCase):
         self.assertIn("item", response.context)
         self.assertIn("custom_lists", response.context)
         self.assertIn("list_tags", response.context)
+
+    @patch("app.services.podcast_import.import_show_from_itunes_id")
+    def test_lists_modal_resolves_podcast_itunes_search_result(self, mock_import):
+        """A podcast search result's iTunes id adds the show under its uuid."""
+        show = PodcastShow.objects.create(
+            podcast_uuid="itunes:1532744254",
+            title="Sternstunde Philosophie",
+            image="http://example.com/podcast.jpg",
+            rss_feed_url="",
+        )
+        mock_import.return_value = show
+
+        response = self.client.get(
+            reverse(
+                "lists_modal",
+                args=[
+                    Sources.POCKETCASTS.value,
+                    MediaTypes.PODCAST.value,
+                    "1532744254",
+                ],
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "lists/components/fill_lists.html")
+        item = Item.objects.get(
+            media_id=show.podcast_uuid,
+            source=Sources.POCKETCASTS.value,
+            media_type=MediaTypes.PODCAST.value,
+        )
+        self.assertEqual(response.context["item"], item)
+        self.assertEqual(item.title, "Sternstunde Philosophie")
+        mock_import.assert_called_once_with("1532744254")
+
+    @patch("app.services.podcast_import.import_show_from_itunes_id")
+    def test_quick_add_podcast_search_result_uses_show_uuid_once(self, mock_import):
+        """Quick add files a searched podcast under its uuid, never twice."""
+        show = PodcastShow.objects.create(
+            podcast_uuid="itunes:1532744254",
+            title="The Belles",
+            image="http://example.com/podcast.jpg",
+            rss_feed_url="",
+        )
+        mock_import.return_value = show
+        custom_list = CustomList.objects.create(name="Pods", owner=self.user)
+        data = {
+            "media_id": "1532744254",
+            "media_type": MediaTypes.PODCAST.value,
+            "source": Sources.POCKETCASTS.value,
+        }
+
+        for _ in range(2):
+            self.client.post(
+                reverse("list_add_item_submit", args=[custom_list.id]),
+                data,
+            )
+
+        item = Item.objects.get(
+            media_id=show.podcast_uuid,
+            media_type=MediaTypes.PODCAST.value,
+        )
+        self.assertFalse(Item.objects.filter(media_id="1532744254").exists())
+        self.assertEqual(custom_list.items.filter(id=item.id).count(), 1)
+
+    def test_list_detail_merges_stray_podcast_item_into_tracked_show(self):
+        """A show filed under its iTunes id folds into the tracked show's Item."""
+        show = PodcastShow.objects.create(
+            podcast_uuid="itunes:1532744254",
+            title="The Belles",
+            image="http://example.com/podcast.jpg",
+            rss_feed_url="",
+        )
+        kwargs = {
+            "source": Sources.POCKETCASTS.value,
+            "media_type": MediaTypes.PODCAST.value,
+            "title": "The Belles",
+            "image": "http://example.com/podcast.jpg",
+        }
+        real = Item.objects.create(media_id=show.podcast_uuid, **kwargs)
+        stray = Item.objects.create(media_id="1532744254", **kwargs)
+        custom_list = CustomList.objects.create(name="Pods", owner=self.user)
+        CustomListItem.objects.create(custom_list=custom_list, item=real)
+        CustomListItem.objects.create(custom_list=custom_list, item=stray)
+
+        response = self.client.get(
+            reverse("list_detail", args=[custom_list.public_reference]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Item.objects.filter(pk=stray.pk).exists())
+        self.assertEqual(
+            list(custom_list.items.values_list("pk", flat=True)),
+            [real.pk],
+        )
+
+    def test_merge_stray_podcast_items_rekeys_when_show_item_missing(self):
+        """Without a tracked Item the stray is re-keyed to the show's uuid."""
+        from app.services.podcast_import import merge_stray_podcast_items
+
+        show = PodcastShow.objects.create(
+            podcast_uuid="itunes:42",
+            title="Serial",
+            image="",
+            rss_feed_url="",
+        )
+        stray = Item.objects.create(
+            media_id="42",
+            source=Sources.POCKETCASTS.value,
+            media_type=MediaTypes.PODCAST.value,
+            title="Serial",
+            image="",
+        )
+        unknown = Item.objects.create(
+            media_id="999",
+            source=Sources.POCKETCASTS.value,
+            media_type=MediaTypes.PODCAST.value,
+            title="Unknown",
+            image="",
+        )
+
+        self.assertEqual(merge_stray_podcast_items(), 1)
+
+        stray.refresh_from_db()
+        unknown.refresh_from_db()
+        self.assertEqual(stray.media_id, show.podcast_uuid)
+        self.assertEqual(unknown.media_id, "999")
 
     @patch("app.providers.services.get_media_metadata")
     @patch("lists.models.CustomList.objects.get_user_lists_with_item")
@@ -3496,6 +3720,237 @@ class ListsModalViewTests(TestCase):
                 media_type=MediaTypes.MUSIC.value,
             ).exists(),
         )
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_lists_modal_album_page_id_uses_stored_album(self, mock_get_metadata):
+        """Issue #1575: an album page's id is not a recording, so ask no provider."""
+        artist = Artist.objects.create(name="Alan Braxe")
+        cases = {
+            "release": Album(
+                title="Running",
+                artist=artist,
+                image="https://example.com/running.jpg",
+                musicbrainz_release_id="123e4567-e89b-12d3-a456-426614174001",
+            ),
+            "release group": Album(
+                title="Group Only",
+                artist=artist,
+                musicbrainz_release_group_id="123e4567-e89b-12d3-a456-426614174002",
+            ),
+            "no MusicBrainz id": Album(title="Unmatched", artist=artist),
+        }
+        for label, album in cases.items():
+            with self.subTest(label):
+                album.save()
+                media_id = (
+                    album.musicbrainz_release_id
+                    or album.musicbrainz_release_group_id
+                    or f"album-{album.id}"
+                )
+
+                response = self.client.get(
+                    reverse(
+                        "lists_modal",
+                        args=[
+                            Sources.MUSICBRAINZ.value,
+                            MediaTypes.MUSIC.value,
+                            media_id,
+                        ],
+                    ),
+                )
+
+                self.assertEqual(response.status_code, 200)
+                item = Item.objects.get(
+                    media_id=media_id,
+                    source=Sources.MUSICBRAINZ.value,
+                    media_type=MediaTypes.MUSIC.value,
+                )
+                self.assertEqual(item.title, album.title)
+                self.assertEqual(item.image, album.image or settings.IMG_NONE)
+        mock_get_metadata.assert_not_called()
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_album_item_can_be_added_to_list_and_opens_album_page(
+        self,
+        mock_get_metadata,
+    ):
+        """An album saved to a list shows there and links back to its album page."""
+        artist = Artist.objects.create(name="Alan Braxe")
+        album = Album.objects.create(
+            title="Running",
+            artist=artist,
+            musicbrainz_release_id="123e4567-e89b-12d3-a456-426614174001",
+        )
+        media_id = album.musicbrainz_release_id
+        self.client.get(
+            reverse(
+                "lists_modal",
+                args=[Sources.MUSICBRAINZ.value, MediaTypes.MUSIC.value, media_id],
+            ),
+        )
+        item = Item.objects.get(media_id=media_id, source=Sources.MUSICBRAINZ.value)
+
+        response = self.client.post(
+            reverse("list_item_toggle"),
+            {"item_id": item.id, "custom_list_id": self.list1.id},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            CustomListItem.objects.filter(custom_list=self.list1, item=item).exists(),
+        )
+
+        response = self.client.get(
+            reverse("list_detail", args=[self.list1.public_reference]),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Running")
+
+        response = self.client.get(
+            reverse(
+                "media_details",
+                kwargs={
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_type": MediaTypes.MUSIC.value,
+                    "media_id": media_id,
+                    "title": "running",
+                },
+            ),
+        )
+        self.assertRedirects(
+            response,
+            reverse(
+                "music_album_details",
+                kwargs={
+                    "artist_id": artist.id,
+                    "artist_slug": "alan-braxe",
+                    "album_id": album.id,
+                    "album_slug": "running",
+                },
+            ),
+            fetch_redirect_response=False,
+        )
+
+        # The card's "Add to tracker" button opens the album's own tracking form.
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                args=[Sources.MUSICBRAINZ.value, MediaTypes.MUSIC.value, media_id],
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse("album_save"))
+        mock_get_metadata.assert_not_called()
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_album_id_routes_resolve_to_users_canonical_duplicate(
+        self,
+        mock_get_metadata,
+    ):
+        """Duplicate rows for one release open the one the user already tracks."""
+        release_id = "123e4567-e89b-12d3-a456-426614174003"
+        untracked = Album.objects.create(
+            title="Running",
+            artist=Artist.objects.create(name="Alan Braxe"),
+            musicbrainz_release_id=release_id,
+        )
+        tracked = Album.objects.create(
+            title="Running",
+            artist=Artist.objects.create(name="Alan Braxe & Fred Falke"),
+            musicbrainz_release_id=release_id,
+        )
+        AlbumTracker.objects.create(
+            user=self.user,
+            album=tracked,
+            status=Status.COMPLETED.value,
+        )
+        self.assertLess(untracked.id, tracked.id)
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                args=[Sources.MUSICBRAINZ.value, MediaTypes.MUSIC.value, release_id],
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'value="{tracked.id}"')
+        self.assertNotContains(response, f'value="{untracked.id}"')
+        mock_get_metadata.assert_not_called()
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_album_release_id_considers_duplicate_without_release_group(
+        self,
+        mock_get_metadata,
+    ):
+        """A tracked duplicate that lacks the group id still wins for its release id."""
+        release_id = "123e4567-e89b-12d3-a456-426614174005"
+        with_group = Album.objects.create(
+            title="Running",
+            artist=Artist.objects.create(name="Alan Braxe"),
+            musicbrainz_release_id=release_id,
+            musicbrainz_release_group_id="123e4567-e89b-12d3-a456-426614174006",
+        )
+        tracked = Album.objects.create(
+            title="Running",
+            artist=Artist.objects.create(name="Alan Braxe & Fred Falke"),
+            musicbrainz_release_id=release_id,
+        )
+        AlbumTracker.objects.create(
+            user=self.user,
+            album=tracked,
+            status=Status.COMPLETED.value,
+        )
+        self.assertLess(with_group.id, tracked.id)
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                args=[Sources.MUSICBRAINZ.value, MediaTypes.MUSIC.value, release_id],
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'value="{tracked.id}"')
+        self.assertNotContains(response, f'value="{with_group.id}"')
+        mock_get_metadata.assert_not_called()
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_anonymous_album_link_goes_to_album_page(self, mock_get_metadata):
+        """A public list's album card reaches the album route, not the provider."""
+        artist = Artist.objects.create(name="Alan Braxe")
+        album = Album.objects.create(
+            title="Running",
+            artist=artist,
+            musicbrainz_release_id="123e4567-e89b-12d3-a456-426614174004",
+        )
+        self.client.logout()
+
+        response = self.client.get(
+            reverse(
+                "media_details",
+                kwargs={
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_type": MediaTypes.MUSIC.value,
+                    "media_id": album.musicbrainz_release_id,
+                    "title": "running",
+                },
+            ),
+        )
+
+        self.assertRedirects(
+            response,
+            reverse(
+                "music_album_details",
+                kwargs={
+                    "artist_id": artist.id,
+                    "artist_slug": "alan-braxe",
+                    "album_id": album.id,
+                    "album_slug": "running",
+                },
+            ),
+            fetch_redirect_response=False,
+        )
+        mock_get_metadata.assert_not_called()
 
     def test_lists_modal_view_filters_lists_by_tag(self):
         """Tag query param should filter list options in the modal."""
@@ -3858,7 +4313,9 @@ class ListItemToggleTests(TestCase):
 
     @patch("lists.views_list_actions.time.sleep")
     @patch("lists.views_list_actions._toggle_list_membership")
-    def test_list_item_toggle_retries_an_immediate_lock_error(self, mock_toggle, _sleep):
+    def test_list_item_toggle_retries_an_immediate_lock_error(
+        self, mock_toggle, _sleep
+    ):
         """A stale-snapshot lock error is instant, so a quick retry succeeds."""
         self.client.login(**self.credentials)
         mock_toggle.side_effect = [OperationalError("database is locked"), True]
@@ -4041,9 +4498,7 @@ class ListRssFeedTests(TestCase):
 
         response = self.client.get(reverse("list_rss", args=[self.custom_list.id]))
         root = ET.fromstring(response.content)
-        titles = [
-            item.findtext("title") for item in root.findall("./channel/item")
-        ]
+        titles = [item.findtext("title") for item in root.findall("./channel/item")]
 
         self.assertEqual(titles, ["RSS Second Movie", "RSS Movie"])
 
@@ -4577,6 +5032,85 @@ class QuickAddListItemTests(TestCase):
             fetch_redirect_response=False,
         )
 
+    def _create_show_in_two_buckets(self):
+        """Create one TV identity stored as both a 'tv' and a 'season' row (#1530)."""
+        identity = {
+            "media_id": "1396",
+            "source": Sources.TMDB.value,
+            "media_type": MediaTypes.TV.value,
+            "title": "Breaking Bad",
+            "image": "https://example.com/bb.jpg",
+        }
+        other_user = get_user_model().objects.create_user(
+            "other", "o@example.com", "pw"
+        )
+        other_row = Item.objects.create(
+            library_media_type=MediaTypes.TV.value, **identity
+        )
+        mine = Item.objects.create(
+            library_media_type=MediaTypes.SEASON.value, **identity
+        )
+        TV.objects.create(item=other_row, user=other_user, status="Planning")
+        TV.objects.create(item=mine, user=self.user, status="Planning")
+        return identity, mine
+
+    def test_add_list_item_submit_survives_item_in_two_library_buckets(self):
+        """A title stored in two buckets adds the user's own row instead of a 500."""
+        identity, mine = self._create_show_in_two_buckets()
+
+        response = self.client.post(
+            reverse("list_add_item_submit", args=[self.custom_list.id]),
+            {
+                "media_id": identity["media_id"],
+                "media_type": identity["media_type"],
+                "source": identity["source"],
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            list(self.custom_list.items.values_list("id", flat=True)),
+            [mine.id],
+        )
+        self.assertEqual(Item.objects.filter(media_id="1396").count(), 2)
+
+    def test_add_list_item_submit_rejects_title_already_in_list_via_other_bucket(self):
+        """The other bucket's row already on the list must block a second add."""
+        identity, mine = self._create_show_in_two_buckets()
+        other_row = Item.objects.get(
+            media_id=identity["media_id"],
+            library_media_type=MediaTypes.TV.value,
+        )
+        CustomListItem.objects.create(custom_list=self.custom_list, item=other_row)
+
+        self.client.post(
+            reverse("list_add_item_submit", args=[self.custom_list.id]),
+            {
+                "media_id": identity["media_id"],
+                "media_type": identity["media_type"],
+                "source": identity["source"],
+            },
+        )
+
+        self.assertEqual(
+            list(self.custom_list.items.values_list("id", flat=True)),
+            [other_row.id],
+        )
+
+    def test_recommendation_item_survives_item_in_two_library_buckets(self):
+        """Recommending a title stored in two buckets reuses a row, not a crash."""
+        identity, mine = self._create_show_in_two_buckets()
+
+        item = get_or_create_recommendation_item(
+            identity["media_id"],
+            identity["media_type"],
+            identity["source"],
+            user=self.user,
+        )
+
+        self.assertEqual(item, mine)
+        self.assertEqual(Item.objects.filter(media_id="1396").count(), 2)
+
     @patch("lists.views.services.search")
     def test_add_list_item_search_uses_track_results_from_music_combined_payload(
         self,
@@ -4662,6 +5196,6 @@ class ListRecommendationsViewTests(TestCase):
 
         content = response.content.decode()
         self.assertIn("Untracked Recommendation", content)
-        self.assertIn(f'id="media-card-rating-{movie.id}"', content)
-        self.assertIn(f'id="media-status-chip-{movie.id}"', content)
+        self.assertIn(f'id="{item_slot_id("media-card-rating", movie.item)}"', content)
+        self.assertIn(f'id="{item_slot_id("media-status-chip", movie.item)}"', content)
         self.assertEqual(content.count('class="media-status-chip '), 1)

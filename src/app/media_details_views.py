@@ -8,9 +8,11 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_not_required
 from django.core.cache import cache
 from django.http import HttpResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.utils import timezone
+from django.utils.translation import gettext
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_GET
 
 from app import (
@@ -49,6 +51,7 @@ from app.detail_builders import (
     _build_series_graph_data,
     _build_stored_season_scores_graph,
     _build_trakt_popularity_context,
+    build_other_book_formats,
 )
 from app.detail_related import (
     drop_recommendations_if_hidden,
@@ -60,6 +63,7 @@ from app.media_list_views import _collect_reading_activity_day_keys
 from app.metadata_sync_views import _build_flat_anime_episode_preview
 from app.models import (
     Anime,
+    BackfillReconcileState,
     BasicMedia,
     ComicIssue,
     CreditRoleType,
@@ -71,7 +75,7 @@ from app.models import (
 )
 from app.models.episode_runtimes import build_season_runtime_index
 from app.providers import services, tmdb
-from app.services import metadata_resolution, opencritic_scores
+from app.services import metadata_resolution, opencritic_scores, youtube_game_watch
 from app.services.metadata_fallback import stored_metadata_fallback
 from app.tag_views import (
     _build_detail_tag_sections,
@@ -139,6 +143,33 @@ def _enrich_comic_issues(issues, user, source):
         entry["item"] = item_by_media_id.get(media_id)
         enriched.append(entry)
     return enriched
+
+
+def _issue_extra_details(media_metadata, authors_linked):
+    """Return (label, text) rows for comic issue details the template lacks.
+
+    Covers what the Metadata editor can set: authors (when none are linked),
+    publisher, format, country, languages and genres. Values may be a string
+    or a list, so both are flattened to one comma-separated line.
+    """
+    if not isinstance(media_metadata, dict):
+        return []
+    details = media_metadata.get("details") or {}
+    candidates = [
+        (gettext("Author"), None if authors_linked else details.get("author")),
+        (gettext("Publisher"), details.get("publisher")),
+        (gettext("Format"), details.get("format")),
+        (gettext("Country"), details.get("country")),
+        (gettext("Languages"), details.get("languages")),
+        (gettext("Genres"), media_metadata.get("genres")),
+    ]
+    rows = []
+    for label, value in candidates:
+        values = value if isinstance(value, (list, tuple)) else [value]
+        text = ", ".join(str(v).strip() for v in values if v and str(v).strip())
+        if text:
+            rows.append((label, text))
+    return rows
 
 
 def _metadata_episode_count(media_metadata):
@@ -234,6 +265,28 @@ def _get_tv_runtime_display_fallback(detail_item, media_metadata):
 
 @login_not_required
 @require_GET
+@xframe_options_sameorigin
+def youtube_player(request):
+    """Embed YouTube in a same-origin document with an origin-only referrer."""
+    from app.youtube_channel_art import VIDEO_ID
+
+    video_id = request.GET.get("v", "")
+    if not VIDEO_ID.fullmatch(video_id):
+        return HttpResponse(status=400)
+    response = render(
+        request,
+        "app/components/youtube_player.html",
+        {
+            "video_id": video_id,
+            "autoplay": request.GET.get("autoplay") == "1",
+        },
+    )
+    response["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
+@login_not_required
+@require_GET
 def media_details(
     request,
     source,
@@ -242,6 +295,33 @@ def media_details(
     title,
 ):
     """Return the details page for a media item."""
+    if request.GET.get("fragment") == "video-metadata":
+        if source != Sources.YOUTUBE.value or media_type != MediaTypes.VIDEO.value:
+            return HttpResponse(status=404)
+        item = Item.objects.filter(
+            source=source,
+            media_type=media_type,
+            media_id=media_id,
+        ).first()
+        if not item:
+            return HttpResponse(status=404)
+        from app.youtube_channel_art import video_details
+
+        extra = video_details(media_id)
+        # A client may have supplied a description while the request was in flight.
+        item.refresh_from_db(fields=["synopsis"])
+        return HttpResponse(
+            render_to_string(
+                "app/components/video_details_extra.html",
+                {
+                    "avatar": extra["avatar"],
+                    "description": extra["description"] if not item.synopsis else "",
+                    "description_media": {"synopsis": extra["description"]},
+                },
+                request=request,
+            )
+        )
+
     if request.GET.get("fragment") == DETAIL_CAROUSEL_FRAGMENT:
         # .strip() matters: an empty carousel must render as a truly empty
         # string, not whitespace, so input.css's #detail-carousel-wrap:not(:empty)
@@ -267,8 +347,21 @@ def media_details(
         request.GET.get("fragment") == DETAIL_SECONDARY_FRAGMENT
         and media_type != MediaTypes.PODCAST.value
     )
+    initial_carousel = (
+        carousel_media.resolve_carousel_media(
+            media_type, source, media_id, cached_only=True
+        )
+        if carousel_supported and not render_secondary_only
+        else None
+    )
     defer_detail_secondary = (
         not render_secondary_only and media_type != MediaTypes.PODCAST.value
+    )
+    # Only the shell renders the score chips that draw the series graphs; the
+    # secondary fragment would otherwise scan the episode rows for nothing.
+    graphs_rendered = not render_secondary_only and media_type in (
+        MediaTypes.TV.value,
+        MediaTypes.ANIME.value,
     )
     detail_return_url = _detail_request_url(request)
     detail_carousel_fragment_url = (
@@ -345,11 +438,22 @@ def media_details(
             _mark_detail_persistence_deferred()
             return fallback
 
+    # A list can hold an album, saved under the album page's id. That id is not
+    # a recording, so the album page is the only place that can describe it.
+    if media_type == MediaTypes.MUSIC.value and source == Sources.MUSICBRAINZ.value:
+        from app.services.music import album_for_media_id
+        from app.templatetags.app_tags import music_album_url
+
+        album = album_for_media_id(media_id, user=request.user)
+        if album:
+            return redirect(music_album_url(album))
+
     # For podcast shows (identified by podcast_uuid), show show detail page
     if media_type == MediaTypes.PODCAST.value and source in {
         Sources.POCKETCASTS.value,
         Sources.GPODDER.value,
         Sources.AUDIOBOOKSHELF.value,
+        Sources.MANUAL.value,
     }:
         from app.models import PodcastEpisode, PodcastShow, PodcastShowTracker
         from app.providers.services import _podcast_external_links
@@ -357,23 +461,20 @@ def media_details(
         # Check if this is a show (podcast_uuid) or an episode (episode_uuid)
         show = PodcastShow.objects.filter(podcast_uuid=media_id).first()
 
-        # If show not found, check if media_id is an iTunes ID and enrich
+        # If show not found, resolve a provider identifier (an iTunes id or a
+        # GPodder feed URL) into the local show catalog.
         if not show:
-            # Check if media_id looks like an iTunes collection ID (numeric string)
+            from django.contrib import messages
+
+            from app.services.podcast_import import (
+                PodcastImportError,
+                resolve_show_for_media_id,
+            )
+            from app.templatetags import app_tags
+
             try:
-                int(media_id)  # Will raise ValueError if not numeric
-                # This looks like an iTunes ID, try to enrich
-                from django.contrib import messages
-                from django.shortcuts import redirect
-
-                from app.services.podcast_import import (
-                    PodcastImportError,
-                    import_show_from_itunes_id,
-                )
-                from app.templatetags import app_tags
-
-                try:
-                    show = import_show_from_itunes_id(media_id)
+                show = resolve_show_for_media_id(media_id, source=source)
+                if show is not None:
                     return redirect(
                         "media_details",
                         source=source,
@@ -381,19 +482,16 @@ def media_details(
                         media_id=show.podcast_uuid,
                         title=app_tags.slug(show.title or "") or "podcast",
                     )
-                except PodcastImportError as e:
-                    messages.error(request, str(e))
-                    # Fall through to empty metadata
-                except Exception as e:
-                    logger.exception(
-                        "Failed to enrich podcast from iTunes metadata: %s",
-                        exception_summary(e),  # noqa: TRY401  # exception_summary() is the project's sanitised rendering
-                    )
-                    messages.error(request, f"Failed to load podcast details: {e}")
-                    # Fall through to empty metadata
-            except ValueError:
-                # media_id is not numeric, not an iTunes ID - fall through to empty metadata
-                pass
+            except PodcastImportError as e:
+                messages.error(request, str(e))
+                # Fall through to empty metadata
+            except Exception as e:
+                logger.exception(
+                    "Failed to enrich podcast from provider metadata: %s",
+                    exception_summary(e),  # noqa: TRY401  # exception_summary() is the project's sanitised rendering
+                )
+                messages.error(request, f"Failed to load podcast details: {e}")
+                # Fall through to empty metadata
 
         if show:
             # This is a show, not an episode - show show detail page
@@ -418,10 +516,12 @@ def media_details(
                     PODCAST_DETAIL_RSS_REFRESH_SECONDS,
                 )
             ):
-                from app.fork_services_podcast import refresh_show_from_rss
+                from app.tasks_podcast import refresh_podcast_show_from_rss_task
 
+                # Queued, so a slow feed host never holds the render; new
+                # episodes show on the next view.
                 _best_effort_detail_followup(
-                    lambda: refresh_show_from_rss(show),
+                    lambda: refresh_podcast_show_from_rss_task.delay(show.id),
                     operation_name="podcast_show_rss_refresh",
                 )
 
@@ -871,6 +971,22 @@ def media_details(
         and not render_secondary_only
         and detail_item is not None
         and detail_item.metadata_fetched_at is not None
+        # Stored text has no locale provenance. An explicit TMDB language must
+        # use its language-keyed provider cache while the upgrade repair runs.
+        and not (
+            source == Sources.TMDB.value
+            and (
+                getattr(request.user, "metadata_language", "")
+                or metadata_resolution.metadata_language_default(
+                    request.user, detail_item
+                )
+                != settings.TMDB_LANG
+                or BackfillReconcileState.objects.filter(
+                    key=f"metadata_language:{request.user.pk}:{settings.TMDB_LANG}",
+                    completed_at__isnull=True,
+                ).exists()
+            )
+        )
     )
 
     provider_metadata_unavailable = False
@@ -1021,6 +1137,12 @@ def media_details(
             if desired_value and getattr(detail_item, field_name) != desired_value:
                 setattr(detail_item, field_name, desired_value)
                 update_fields.append(field_name)
+        if (
+            media_metadata.get("synopsis")
+            and detail_item.synopsis != media_metadata["synopsis"]
+        ):
+            detail_item.synopsis = media_metadata["synopsis"]
+            update_fields.append("synopsis")
         if update_fields:
             _best_effort_detail_db_work(
                 lambda: detail_item.save(update_fields=update_fields),
@@ -1510,17 +1632,7 @@ def media_details(
             ),
         )
         if user_medias:
-
-            def _activity_key(entry):
-                dates = [d for d in (entry.end_date, entry.start_date) if d]
-                primary_date = max(dates) if dates else entry.created_at
-                return (
-                    primary_date,
-                    entry.start_date or entry.created_at,
-                    entry.created_at,
-                )
-
-            user_medias.sort(key=_activity_key, reverse=True)
+            user_medias.sort(key=helpers.entry_activity_key, reverse=True)
         current_instance = user_medias[0] if user_medias else None
 
     if current_instance is not None:
@@ -1954,12 +2066,47 @@ def media_details(
             media_metadata["episodes"],
         )
 
+    if media_type == MediaTypes.VIDEO.value and not render_secondary_only:
+        from app.image_cache import rewrite_image_url
+        from app.templatetags.app_tags import youtube_landscape_thumbnail
+        from app.youtube_channel_art import VIDEO_ID
+
+        is_youtube_video = source == Sources.YOUTUBE.value and VIDEO_ID.fullmatch(
+            str(media_id)
+        )
+        image = media_metadata.get("image")
+        if not helpers.has_real_image(image) and is_youtube_video:
+            image = f"https://i.ytimg.com/vi/{media_id}/hqdefault.jpg"
+        if helpers.has_real_image(image):
+            thumbnail = rewrite_image_url(youtube_landscape_thumbnail(image))
+            initial_carousel = {
+                "overview": {
+                    "url": thumbnail,
+                    "thumb_url": thumbnail,
+                    "fallback_url": rewrite_image_url(image),
+                },
+                "video": {"key": media_id, "show_player_initially": True}
+                if is_youtube_video
+                else None,
+                "photos": [],
+                "hero": None,
+            }
+            carousel_supported = True
+
     context = {
         "user": request.user,
         "media": media_metadata,
         "media_type": media_type,
         "match_item": detail_item,
+        "other_book_formats": (
+            [] if public_view else build_other_book_formats(request.user, detail_item)
+        ),
         "authors_linked": authors_linked,
+        "issue_extra_details": (
+            _issue_extra_details(media_metadata, authors_linked)
+            if media_type == MediaTypes.COMIC_ISSUE.value
+            else []
+        ),
         "author_detail_keys": author_detail_keys,
         "studios_linked": studios_linked,
         "studio_detail_keys": studio_detail_keys,
@@ -1977,6 +2124,15 @@ def media_details(
         "mal_score": mal_score,
         "opencritic_score": opencritic_score,
         "game_lengths": game_lengths,
+        "youtube_watch": (
+            youtube_game_watch.watched_for_game(request.user, detail_item)
+            if render_secondary_only
+            and media_type == MediaTypes.GAME.value
+            and detail_item
+            and request.user.is_authenticated
+            and not public_view
+            else None
+        ),
         "game_lengths_pending": game_lengths_refresh_pending
         and not (game_lengths and game_lengths.get("available")),
         "notes_entry": notes_entry,
@@ -2023,7 +2179,7 @@ def media_details(
                 (media_metadata.get("related") or {}).get("seasons"),
                 display_provider,
             )
-            if media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value)
+            if graphs_rendered
             and display_provider in {Sources.TMDB.value, Sources.TVDB.value}
             else None
         ),
@@ -2032,7 +2188,7 @@ def media_details(
             or _build_stored_season_scores_graph(
                 display_provider, media_id, use_trakt=True
             )
-            if media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value)
+            if graphs_rendered
             else None
         ),
         "imdb_series_graph_data": (
@@ -2040,7 +2196,7 @@ def media_details(
             or _build_stored_season_scores_graph(
                 display_provider, media_id, use_imdb=True
             )
-            if media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value)
+            if graphs_rendered
             else None
         ),
         "metadata_provider_options": metadata_provider_options,
@@ -2063,6 +2219,7 @@ def media_details(
         "defer_detail_secondary": defer_detail_secondary,
         "render_secondary_only": render_secondary_only,
         "carousel_supported": carousel_supported,
+        "initial_carousel": initial_carousel,
         "detail_carousel_fragment_url": detail_carousel_fragment_url,
         **_build_detail_person_rows(media_metadata, item=detail_item),
     }

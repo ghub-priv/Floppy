@@ -31,9 +31,16 @@ from django.utils import timezone
 from app.library_query import filters as filter_registry
 from app.library_query import sorts as sort_registry
 from app.library_query.spec import ROUTING_MODEL, STATUS_MATCH_LATEST
-from app.library_query.trackers import tracker_sources
+from app.library_query.trackers import episode_media_for_items, tracker_sources
 from app.models.choices import MediaTypes, Sources
 from app.models.item import Item
+
+# Only grouped shows (anime/seasons stored on TV rows) set library_media_type
+# to another type; every other library matches on media_type alone, which a
+# covering index answers without reading wide item rows.
+_LIBRARY_BUCKET_TYPES = frozenset(
+    (MediaTypes.TV.value, MediaTypes.ANIME.value, MediaTypes.SEASON.value),
+)
 
 if TYPE_CHECKING:
     from app.library_query.spec import LibraryQuery
@@ -113,7 +120,10 @@ class LibraryQueryExecutor:
 
     def _type_q(self, ctx) -> Q:
         """Return: the item itself belongs to this type's library."""
-        if self.query.routing == ROUTING_MODEL:
+        if (
+            self.query.routing == ROUTING_MODEL
+            or ctx.media_type not in _LIBRARY_BUCKET_TYPES
+        ):
             return Q(media_type=ctx.media_type)
         return Q(media_type=ctx.media_type) | Q(library_media_type=ctx.media_type)
 
@@ -163,17 +173,26 @@ class LibraryQueryExecutor:
         )
 
     def _collection_only_q(self, ctx) -> Q:
-        """Return collected items of this type that have no tracker row."""
-        from app.models.discovery import CollectionEntry
+        """Return collected or tagged items of this type that have no tracker row."""
+        from app.models.discovery import CollectionEntry, ItemTag
 
-        collected = Q(
-            pk__in=CollectionEntry.objects.filter(user=self.user).values("item_id"),
+        # Exists keeps the plan item-driven: a user can hold 100k+ collection
+        # rows, and walking them into wide item rows costs seconds cold.
+        collected = Exists(
+            CollectionEntry.objects.filter(user=self.user, item_id=OuterRef("pk")),
         ) & ~Q(media_type=MediaTypes.EPISODE.value)
         if ctx.media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value):
             collected |= Q(
                 media_type__in=(MediaTypes.TV.value, MediaTypes.ANIME.value),
                 pk__in=filter_registry.shows_with_collected_episodes(self.user),
             )
+        values = self.query.filters
+        if values.tags and values.tag_mode != "not":
+            # A tag can sit on an item with no tracker and no collection entry;
+            # asking for the tag must still find it (#1351).
+            collected |= Q(
+                pk__in=ItemTag.objects.filter(tag__user=self.user).values("item_id"),
+            ) & ~Q(media_type=MediaTypes.EPISODE.value)
         untracked = ~filter_registry.any_row(ctx)
         return self._type_q(ctx) & collected & untracked
 
@@ -348,6 +367,14 @@ class LibraryQueryExecutor:
             return list(self._ordered(self.filtered).values_list("pk", flat=True))
         return [row[-1] for row in self._scan_ranked]
 
+    def rank_rows(self) -> list[tuple]:
+        """Return compact sort values and item identities for a composed shelf.
+
+        Uses the same SQL values or batched scan as page(), without decorating
+        cards or retaining hydrated candidates.
+        """
+        return self._scan(self.filtered, with_sort=True)
+
     def matches(self):
         """Return the matches as a scope for another query's ``within``.
 
@@ -383,8 +410,11 @@ class LibraryQueryExecutor:
             ordered = self._ordered(self.filtered)
             if total is None:
                 total = ordered.count()
-            items = list(ordered.defer(*defer)[offset : offset + limit])
-            return Page(items, total, used_sql=True)
+            # Sort on ids alone, then load the window: ordering a library
+            # would otherwise drag every candidate's wide row through the sort.
+            window = list(ordered.values_list("pk", flat=True)[offset : offset + limit])
+            by_id = Item.objects.defer(*defer).in_bulk(window)
+            return Page([by_id[i] for i in window if i in by_id], total, used_sql=True)
 
         ranked = self._scan_ranked
         selected_ids = [pk for *_rest, pk in ranked[offset : offset + limit]]
@@ -521,19 +551,34 @@ def _attach_media(user, batch: list[Candidate], needs: set[str]) -> None:
 
     by_type: dict[str, list[Candidate]] = {}
     for candidate in batch:
-        if candidate.item.media_type == MediaTypes.EPISODE.value:
-            continue
         by_type.setdefault(candidate.item.media_type, []).append(candidate)
 
     for media_type, candidates in by_type.items():
         model = apps.get_model("app", media_type)
+        if media_type == MediaTypes.EPISODE.value:
+            latest = episode_media_for_items(user, [candidate.item.pk for candidate in candidates])
+            for candidate in candidates:
+                candidate.media = latest.get(candidate.item.pk)
+            continue
         rows = model.objects.filter(
             user=user,
             item_id__in=[candidate.item.pk for candidate in candidates],
         ).select_related("item")
+        if filter_registry.NEEDS_WATCH_PROVIDERS not in needs:
+            # The scan's candidate queryset defers this blob; the tracker rows
+            # must not bring it back through their own select_related.
+            rows = rows.defer("item__watch_providers")
         # Progress and derived status read episodes and seasons; fetch them
-        # once for the batch instead of once per row.
-        rows = BasicMedia.objects._apply_prefetch_related(rows, media_type, compact_episodes=True)
+        # once for the batch instead of once per row. Ranking only reads the
+        # compact episode fields: runtime comes from the bulk runtime index
+        # below, not from the prefetched episode items.
+        rows = BasicMedia.objects._apply_prefetch_related(
+            rows,
+            media_type,
+            list_mode=True,
+            compact_episodes=True,
+            light_rows=True,
+        )
         aggregated = BasicMedia.objects._aggregate_duplicate_data(rows, user, media_type)
         latest = {}
         for media in aggregated:

@@ -1,24 +1,28 @@
+import calendar
 import re
 from datetime import date, datetime, time, timedelta
+from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
 from django import template
 from django.conf import settings
-from django.urls import reverse
+from django.urls import reverse as _django_reverse
 from django.utils import formats, timezone
 from django.utils.dateparse import parse_date
 from django.utils.html import format_html
 from django.utils.translation import (
     get_language,
     get_language_info,
+    ngettext,
     npgettext,
     pgettext,
 )
 from django.utils.translation import gettext as _
 from unidecode import unidecode
 
-from app import card_surfaces, config, helpers, image_cache
+from app import card_surfaces, checkin, config, helpers, image_cache, track_actions
+from app import entry_sources as entry_sources_module
 from app.models import Item, MediaTypes, Sources, Status
 from app.providers import tmdb
 from app.services import metadata_resolution
@@ -26,6 +30,22 @@ from app.stats_music import COUNTRY_NAME_MAP
 from users.media_type_chips import media_type_chip_preferences
 from users.models import ALL_SEARCH_TYPE, HISTORY_VIEW_TYPE, TimeFormatChoices
 from users.templatetags.user_tags import user_date_format, user_time_format
+
+
+@lru_cache(maxsize=8192)
+def _reverse_cached(viewname, kwargs_items):
+    return _django_reverse(viewname, kwargs=dict(kwargs_items))
+
+
+def reverse(viewname, kwargs=None, **rest):
+    """Resolve URLs; a card grid repeats the same few thousand names."""
+    if kwargs and not rest:
+        try:
+            return _reverse_cached(viewname, tuple(sorted(kwargs.items())))
+        except TypeError:  # unhashable kwarg value
+            pass
+    return _django_reverse(viewname, kwargs=kwargs, **rest)
+
 
 register = template.Library()
 COUNTRY_CODE_LENGTH = 2
@@ -100,9 +120,7 @@ def detail_promoted_facts(media_type, details):
                 and key == "status"
                 and details.get("format")
             ):
-                label = _("%(format)s series status") % {
-                    "format": _(details["format"])
-                }
+                label = _("%(format)s series status") % {"format": _(details["format"])}
         fields.append({"key": key, "label": label, "value": value})
     return {"fields": fields, "suppressed_keys": suppressed_keys}
 
@@ -150,12 +168,22 @@ def country_code(value):
 # capitalized, and text a user typed ("Theatre") is shown as typed.
 ENTRY_SOURCE_LABELS = {
     "anilist": "AniList",
+    "audiobookshelf": "Audiobookshelf",
+    "gpodder": "gPodder",
     "imdb": "IMDb",
+    "koreader": "KOReader",
     "lastfm": "Last.fm",
     "listenbrainz": "ListenBrainz",
     "myanimelist": "MyAnimeList",
     "simkl": "SIMKL",
+    "youtube": "YouTube",
 }
+
+
+@register.simple_tag
+def entry_source_suggestions(user):
+    """Return the sources this user has used, for the Source field."""
+    return entry_sources_module.entry_source_suggestions(user)
 
 
 @register.filter
@@ -185,6 +213,12 @@ def translate_activity_text(value, media_type=None):
         return ""
 
     text = str(value)
+    comparison_match = re.fullmatch(r"(Up|Down) (.+)", text)
+    if comparison_match:
+        direction, amount = comparison_match.groups()
+        message = _("Up %(value_1)s") if direction == "Up" else _("Down %(value_1)s")
+        return message % {"value_1": amount}
+
     progress_match = re.fullmatch(r"Progress:\s*(.+)", text)
     if progress_match:
         return _("Progress: %(value_1)s") % {"value_1": progress_match.group(1)}
@@ -336,9 +370,62 @@ def no_underscore(arg1):
 
 
 @register.filter
+def related_section_label(name):
+    """Heading for a related-media section; keep acronyms like DLCs upper-case."""
+    if name == "dlcs":
+        return "DLCs"
+    return str(name).replace("_", " ").title()
+
+
+@register.filter
 def image_url(value):
     """Return a safe Floppy image proxy URL when external caching is enabled."""
     return image_cache.rewrite_image_url(value)
+
+
+@register.simple_tag
+def episode_queue_url(item, media):
+    """Return the episode page the Up Next chip opens."""
+    queue = media.next_episode_queue
+    if queue.get("season_number") is None:
+        return ""
+    is_anime = item.media_type == MediaTypes.ANIME.value
+    return reverse(
+        "anime_episode_details" if is_anime else "episode_details",
+        kwargs={
+            "source": queue["source"],
+            "media_id": queue["media_id"],
+            "title": slug(item.title) or slug(str(queue["media_id"])) or "item",
+            "season_number": queue["season_number"],
+            "episode_number": queue["episode_number"],
+        },
+    )
+
+
+@register.simple_tag
+def episode_queue_label(media):
+    """Localize the Up Next chip when rendering, after the Home row cache."""
+    queue = media.next_episode_queue
+    if queue["released"]:
+        return f"{media.episodes_left} {_('Behind')}"
+    days = queue.get("days_until")
+    if days is None:
+        return _("Upcoming")
+    if days == 0:
+        return _("Today")
+    return f"{days} {ngettext('day', 'days', days)}"
+
+
+@register.filter
+def youtube_landscape_thumbnail(value):
+    """Prefer YouTube's high-resolution thumbnail for standard artwork."""
+    if not isinstance(value, str):
+        return value
+    return re.sub(
+        r"^(https://(?:i\.ytimg\.com|img\.youtube\.com)/vi/[A-Za-z0-9_-]{11}/)(?:hqdefault|mqdefault|sddefault)\.jpg$",
+        r"\1maxresdefault.jpg",
+        value,
+    )
 
 
 @register.filter
@@ -449,6 +536,12 @@ def slug(arg1):
 
 
 @register.filter
+def minutes_hhmm(total_minutes):
+    """Format minutes as "1h 05min", or "45min" under an hour."""
+    return helpers.minutes_to_hhmm(total_minutes or 0)
+
+
+@register.filter
 def date_format(datetime, user):
     """Format a datetime using user's preferred date format (date only, no time).
 
@@ -457,6 +550,19 @@ def date_format(datetime, user):
         user: User object to get preferred date format
     """
     return user_date_format(datetime, user)
+
+
+@register.filter
+def is_future_date(value):
+    """Only known dates after today represent unreleased episodes."""
+    if isinstance(value, str):
+        try:
+            value = parse_date(value)
+        except ValueError:
+            return False
+    if isinstance(value, datetime):
+        value = timezone.localtime(value).date() if timezone.is_aware(value) else value.date()
+    return isinstance(value, date) and value > timezone.localdate()
 
 
 @register.filter
@@ -1360,7 +1466,7 @@ def _untracked_season_next_episode_url(item, seasons, actual_media_type):
     season without a Season row. Untracked seasons are only visible through
     their calendar events (same source as _next_episode_air_date_value).
     """
-    from events.models import Event
+    from events.models import Event, released_q
 
     is_dict = isinstance(item, dict)
     media_id = item["media_id"] if is_dict else getattr(item, "media_id", None)
@@ -1383,7 +1489,7 @@ def _untracked_season_next_episode_url(item, seasons, actual_media_type):
         )
         .exclude(item__season_number__in=tracked_season_numbers)
         .exclude(datetime__year__lt=1900)
-        .filter(datetime__lte=timezone.now())
+        .filter(released_q("datetime", timezone.now()))
         .order_by("item__season_number", "content_number")
         .select_related("item")
         .first()
@@ -1421,7 +1527,7 @@ def _next_episode_number_for_season_item(item, media):
     if not media_id or not source or season_number is None:
         return None
 
-    from events.models import Event
+    from events.models import Event, released_q
 
     event_numbers = (
         Event.objects.filter(
@@ -1430,9 +1536,9 @@ def _next_episode_number_for_season_item(item, media):
             item__media_type=MediaTypes.SEASON.value,
             item__season_number=season_number,
             content_number__isnull=False,
-            datetime__lte=timezone.now(),
         )
         .exclude(datetime__year__lt=1900)
+        .filter(released_q("datetime", timezone.now()))
         .values_list("content_number", flat=True)
     )
     episode_numbers = sorted({int(number) for number in event_numbers})
@@ -1594,6 +1700,35 @@ def media_view_url(view_name, media):
         kwargs.pop("season_number", None)
 
     return reverse(view_name, kwargs=kwargs)
+
+
+@register.simple_tag
+def item_slot_id(prefix, item):
+    """Return an id for a card slot that a save or score response swaps in place.
+
+    Built from the item's own identity (source, type, ids), so it is the same
+    on a card for something not tracked yet and in the response after saving.
+    Unlike component_id it ignores route_media_type, which is only set on
+    some cards (e.g. grouped anime in search), and it includes the source,
+    since two providers can share a media id.
+    """
+    is_dict = isinstance(item, dict)
+    if not is_dict and not hasattr(item, "media_type"):
+        return ""
+
+    def get(name):
+        return item.get(name) if is_dict else getattr(item, name, None)
+
+    parts = [
+        prefix,
+        get("source"),
+        get("media_type"),
+        get("media_id"),
+        get("season_number"),
+        get("episode_number"),
+    ]
+    slot_id = "-".join(str(part) for part in parts if part not in (None, ""))
+    return re.sub(r"[^A-Za-z0-9_-]", "-", slot_id)
 
 
 @register.simple_tag
@@ -2141,3 +2276,83 @@ def media_card(context, surface, **values):
     See ``app.card_surfaces`` for the surfaces and the values a card accepts.
     """
     return card_surfaces.card_context(context.flatten(), surface, values)
+
+
+# Icons the detail action row may hold, in display order. Below 400px wide the
+# row keeps this many cells (the More menu is one of them) so each stays tappable.
+DETAIL_ROW_PHONE_CAP = 5
+
+
+@register.simple_tag(takes_context=True)
+def detail_action_row(context, media, media_type):
+    """Say which icons the detail action row shows, and which fold into More on phones.
+
+    Icons that cannot do anything for the item are left out: manual items have no
+    provider to sync with, Seerr needs a configured server and a TMDB movie or
+    show, and podcast shows keep their notes in their own tracker form.
+    """
+    request = context.get("request")
+    user = getattr(request, "user", None)
+    source = (
+        media.get("source")
+        if isinstance(media, dict)
+        else getattr(media, "source", None)
+    )
+    show = {
+        "link": bool(context.get("detail_link_sections")),
+        "tags": True,
+        "notes": not context.get("podcast_show"),
+        "lists": True,
+        "seerr": bool(
+            user
+            and user.seerr_url
+            and user.seerr_api_key
+            and user.seerr_user_id
+            and source == Sources.TMDB.value
+            and media_type in (MediaTypes.MOVIE.value, MediaTypes.TV.value),
+        ),
+        "history": True,
+        "sync": source != Sources.MANUAL.value,
+    }
+    shown = [key for key, on in show.items() if on]
+    # More takes the last icons, the ones used least, and is itself one cell.
+    overflow = (
+        shown[DETAIL_ROW_PHONE_CAP - 1 :] if len(shown) > DETAIL_ROW_PHONE_CAP else []
+    )
+    return {**show, "overflow": overflow}
+
+
+@register.simple_tag(takes_context=True)
+def media_track_actions(context, media_type, instance):
+    """Return the detail-page split button actions, and when their phase should refresh.
+
+    A running check-in changes its own button label (Pause becomes Finish, then
+    the movie completes), so the controls refresh at those moments.
+    """
+    request = context.get("request")
+    phase = checkin.phase(request.user, instance) if request and instance else None
+    reload_in = phase["reload_in"] if phase else None
+    # Grouped anime (TMDB/TVDB) is stored as a TV show, which holds one tracker,
+    # so the stored type decides the actions, not the route type.
+    item = getattr(instance, "item", None)
+    stored_type = getattr(item, "media_type", None) or media_type
+    return {
+        "actions": track_actions.track_actions(
+            stored_type,
+            instance.status if instance else None,
+            phase,
+        ),
+        "reload_ms": max(1, reload_in + checkin.SETTLE_DELAY_SECONDS) * 1000
+        if reload_in is not None
+        else None,
+    }
+
+
+@register.filter
+def month_abbreviation(value):
+    """Localize cached English heatmap month labels at render time."""
+    try:
+        number = list(calendar.month_abbr).index(str(value))
+    except ValueError:
+        return value
+    return formats.date_format(date(2000, number, 1), "M") if number else ""

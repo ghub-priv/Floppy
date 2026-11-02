@@ -19,6 +19,7 @@ from app import providers
 from app.models.choices import MediaTypes, Sources, Status
 from app.models.item import Item
 from app.models.manager import MediaManager
+from app.services.sync_lock import serialized_state_write
 from integrations.import_scope import ImportScopedManager, ImportScopedQuerySet
 
 logger = logging.getLogger(__name__)
@@ -57,10 +58,31 @@ RUNTIME_UNKNOWN_AIRED = 999998
 RUNTIME_UNKNOWN_FAILED = 999999
 
 
+class OwnerEndDateHistory(HistoricalRecords):
+    """History table indexed for the History page's per-user end_date query.
+
+    Only music and podcasts read their history table directly by
+    ``history_user`` and ``end_date``; other media types keep the default.
+    """
+
+    def get_meta_options(self, model):
+        """Add the (history_user, end_date) index for music and podcasts."""
+        meta = super().get_meta_options(model)
+        if model.__name__ in ("Music", "Podcast"):
+            meta["indexes"] = (
+                *meta.get("indexes", ()),
+                models.Index(
+                    fields=["history_user", "end_date"],
+                    name=f"app_hist{model.__name__.lower()}_user_end_idx",
+                ),
+            )
+        return meta
+
+
 class Media(models.Model):
     """Abstract model for all media types."""
 
-    history = HistoricalRecords(
+    history = OwnerEndDateHistory(
         cascade_delete_history=True,
         inherit=True,
         excluded_fields=[
@@ -128,12 +150,36 @@ class Media(models.Model):
         indexes = [
             models.Index(fields=["user", "status"]),
             models.Index(fields=["user", "created_at"]),
+            # Discover's candidate queries filter user+status(+score) and order
+            # by recency (end_date, progressed_at, created_at) with a LIMIT.
+            models.Index(
+                fields=["user", "status", "-end_date", "-progressed_at", "-created_at"],
+                name="app_%(class)s_usr_act_idx",
+            ),
+            models.Index(
+                fields=[
+                    "user",
+                    "status",
+                    "-score",
+                    "-end_date",
+                    "-progressed_at",
+                    "-created_at",
+                ],
+                name="app_%(class)s_usr_scr_idx",
+            ),
+            # History day/month queries filter user and (end_date in range, or
+            # end_date NULL and start_date in range) without a status.
+            models.Index(
+                fields=["user", "end_date", "start_date"],
+                name="app_%(class)s_usr_dates_idx",
+            ),
         ]
 
     def __str__(self):
         """Return the title of the media."""
         return self.item.__str__()
 
+    @serialized_state_write
     def save(self, *args, **kwargs):
         """Save the media instance."""
         from app.services.completion import (
@@ -166,6 +212,57 @@ class Media(models.Model):
                 finalize_completed_entry(planning_entries)
         else:
             super().save(*args, **kwargs)
+
+    def _sync_relevant_fields_changed(self):
+        """Return whether status, progress or score changed in this save()."""
+        return (
+            self.tracker.has_changed("status")
+            or self.tracker.has_changed("progress")
+            or self.tracker.has_changed("score")
+        )
+
+    def _score_cleared(self):
+        """Return whether this save() removes a rating that was set."""
+        return (
+            self.score is None
+            and self.tracker.has_changed("score")
+            and self.tracker.previous("score") is not None
+        )
+
+    def _queue_mal_sync(self, media_type, clear_score=False):
+        """Queue an async push of this entry's status to MyAnimeList, if applicable.
+
+        No-ops for entries not sourced from MAL (e.g. AniList-backed anime or
+        MangaUpdates-backed manga) and for users without an active per-item
+        MAL connection. The push waits for the save to commit, so the worker
+        never reads the previous state. Bulk imports bypass save() entirely, so
+        this only fires for interactive edits and webhook-driven updates -
+        never as a side effect of importing.
+        """
+        if self.item.source != Sources.MAL.value:
+            return
+
+        from integrations.mal_sync import per_item_sync_active
+        from integrations.tasks import sync_mal_status
+
+        if not per_item_sync_active(self.user_id):
+            return
+
+        def send():
+            try:
+                sync_mal_status.delay(
+                    media_type=media_type, media_id=self.pk, clear_score=clear_score,
+                )
+            # The broker is down; the save already committed, so never raise.
+            except Exception as error:
+                logger.warning(
+                    "mal_sync_enqueue_failed media_type=%s media_id=%s error=%s",
+                    media_type,
+                    self.pk,
+                    error,
+                )
+
+        transaction.on_commit(send)
 
     def _get_local_max_progress(self):
         """Return locally-derived length for music, podcasts, and videos without provider calls."""
@@ -553,6 +650,8 @@ class Media(models.Model):
         if self.item.media_type == MediaTypes.SEASON.value and season_number:
             # For a Season: query episodes in this season where episode_number > progress
             # Only count episodes that have actually been released (have aired)
+            from events.models import released_q
+
             current_datetime = timezone.now()
             unwatched_episodes = (
                 Item.objects.filter(
@@ -563,8 +662,8 @@ class Media(models.Model):
                     episode_number__gt=self.progress,
                     runtime_minutes__isnull=False,
                     release_datetime__isnull=False,  # Only count episodes with air dates
-                    release_datetime__lte=current_datetime,  # Only count episodes that have aired
                 )
+                .filter(released_q("release_datetime", current_datetime))
                 .exclude(
                     runtime_minutes=RUNTIME_UNKNOWN_FAILED,  # Exclude placeholder for unknown runtime
                 )
@@ -751,6 +850,20 @@ class Manga(Media):
 
     tracker = FieldTracker()
 
+    reading_time = models.PositiveIntegerField(
+        default=0,
+        help_text="Minutes spent reading, added up from check-ins or entered by hand.",
+    )
+
+    @serialized_state_write
+    def save(self, *args, **kwargs):
+        """Save the manga instance, then queue a MyAnimeList sync if relevant."""
+        should_sync = self._sync_relevant_fields_changed()
+        clear_score = self._score_cleared()
+        super().save(*args, **kwargs)
+        if should_sync:
+            self._queue_mal_sync(MediaTypes.MANGA.value, clear_score=clear_score)
+
     @property
     def formatted_progress(self):
         """Return progress as a percentage when percentage tracking is enabled."""
@@ -807,6 +920,7 @@ class Anime(Media):
     objects = ActiveAnimeManager()
     all_objects = ImportScopedManager()  # manager order is significant; objects must stay the default
 
+    @serialized_state_write
     def save(self, *args, **kwargs):
         """Save, then auto-migrate a completed flat MAL anime to episode tracking.
 
@@ -814,10 +928,20 @@ class Anime(Media):
         otherwise leave its (provider-mapped) episode list showing unwatched. When
         it becomes COMPLETED we convert it into grouped TV-style tracking, which
         creates real Episode records for every watched episode.
+
+        The conversion changes the entry's library shape and metadata provider,
+        so it stays behind the same opt-in as a scrobble-driven conversion
+        (``group_scrobbled_anime``). Without it, completing a MAL entry keeps
+        its MAL identity and detail URL.
         """
         is_create = self._state.adding
         status_changed = self.tracker.has_changed("status")
+        should_sync = self._sync_relevant_fields_changed()
+        clear_score = self._score_cleared()
         super().save(*args, **kwargs)
+
+        if should_sync:
+            self._queue_mal_sync(MediaTypes.ANIME.value, clear_score=clear_score)
 
         became_completed = self.status == Status.COMPLETED.value and (
             status_changed or is_create
@@ -827,6 +951,7 @@ class Anime(Media):
             and self.migrated_to_item_id is None
             and self.item.source == Sources.MAL.value
             and self.item.media_type == MediaTypes.ANIME.value
+            and getattr(self.user, "group_scrobbled_anime", False)
         ):
             self._auto_migrate_completed_flat_anime()
 
@@ -991,6 +1116,11 @@ class MoviePlay(models.Model):
         """Return a description of the play."""
         return f"{self.movie} play ({self.end_date})"
 
+    @serialized_state_write
+    def save(self, *args, **kwargs):
+        """Commit the play and its watched projection together."""
+        return super().save(*args, **kwargs)
+
 
 class Game(Media):
     """Model for games."""
@@ -1049,6 +1179,11 @@ class Book(Media):
 
     tracker = FieldTracker()
 
+    reading_time = models.PositiveIntegerField(
+        default=0,
+        help_text="Minutes spent reading, added up from check-ins or entered by hand.",
+    )
+
     @property
     def formatted_progress(self):
         """Return progress formatted by book format: time for audiobooks, pages otherwise."""
@@ -1098,6 +1233,11 @@ class Comic(Media):
     """Model for comics."""
 
     tracker = FieldTracker()
+
+    reading_time = models.PositiveIntegerField(
+        default=0,
+        help_text="Minutes spent reading, added up from check-ins or entered by hand.",
+    )
 
     @property
     def formatted_progress(self):

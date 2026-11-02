@@ -13,6 +13,7 @@ from django.utils import timezone
 from app.history_cache_serialization import _serialize_history_day
 from app.history_cache_utils import (
     HISTORY_CACHE_TIMEOUT,
+    HISTORY_CACHE_VERSION,
     HISTORY_DAY_CACHE_TIMEOUT,
     _cache_key,
     _current_history_era,
@@ -27,6 +28,7 @@ from app.history_cache_utils import (
     _typed_history_index_registry_key,
     expand_history_media_types,
 )
+from app.history_entry_builders import flat_anime_episode_watches
 from app.models import (
     Anime,
     BoardGame,
@@ -41,6 +43,8 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
+HISTORY_SHARED_DAYS_TIMEOUT = 120
+
 
 def _add_days(days_set, days_iterable):
     added = 0
@@ -51,19 +55,15 @@ def _add_days(days_set, days_iterable):
     return added
 
 
-def build_history_index(
-    user, logging_style_override=None, media_types=None
-):
-    """Build an ordered list of active history days for a user."""
-    build_start = time.perf_counter()
-    logging_style = _normalize_logging_style(logging_style_override, user)
-    requested_media_types = expand_history_media_types(media_types)
+def _build_shared_history_days(user, requested_media_types):
+    """Return the days both logging styles index, and the per-type counts.
+
+    Games and board games are the only types whose days depend on the style.
+    """
     include_episode = requested_media_types is None or "episode" in requested_media_types
     include_movie = requested_media_types is None or "movie" in requested_media_types
     include_music = requested_media_types is None or "music" in requested_media_types
     include_podcast = requested_media_types is None or "podcast" in requested_media_types
-    include_game = requested_media_types is None or "game" in requested_media_types
-    include_boardgame = requested_media_types is None or "boardgame" in requested_media_types
     include_video = requested_media_types is None or "video" in requested_media_types
     days = set()
 
@@ -75,6 +75,7 @@ def build_history_index(
         .annotate(
             day=TruncDate("end_date"),
         )
+        .order_by()
         .values_list("day", flat=True)
         .distinct()
     ) if include_episode else []
@@ -88,6 +89,7 @@ def build_history_index(
         .annotate(
             day=TruncDate("start_date"),
         )
+        .order_by()
         .values_list("day", flat=True)
         .distinct()
     ) if include_episode else []
@@ -106,6 +108,7 @@ def build_history_index(
         .annotate(
             day=TruncDate("end_date"),
         )
+        .order_by()
         .values_list("day", flat=True)
         .distinct()
     )
@@ -117,6 +120,7 @@ def build_history_index(
         .annotate(
             day=TruncDate("start_date"),
         )
+        .order_by()
         .values_list("day", flat=True)
         .distinct()
     )
@@ -138,16 +142,44 @@ def build_history_index(
             requested_media_types is None or media_type in requested_media_types
         ):
             continue
+        if model is Anime:
+            # Flat anime episodes are dated by the entry's change log, so the
+            # days come from the same expansion the day builder renders.
+            anime_records = list(
+                Anime.objects.filter(user=user).only(
+                    "id",
+                    "progress",
+                    "start_date",
+                    "end_date",
+                ),
+            )
+            episode_watches = flat_anime_episode_watches(anime_records)
+            anime_days = set()
+            for record in anime_records:
+                watches = episode_watches.get(record.id)
+                if watches:
+                    anime_days.update(
+                        _localize_datetime(watched_at).date()
+                        for _number, watched_at in watches
+                    )
+                elif record.end_date or record.start_date:
+                    anime_days.add(
+                        _localize_datetime(record.end_date or record.start_date).date(),
+                    )
+            reading_count += _add_days(days, anime_days)
+            continue
         reading_qs = model.objects.filter(user=user)
         reading_end_days = (
             reading_qs.filter(end_date__isnull=False)
             .annotate(day=TruncDate("end_date"))
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
         reading_start_days = (
             reading_qs.filter(end_date__isnull=True, start_date__isnull=False)
             .annotate(day=TruncDate("start_date"))
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
@@ -165,6 +197,7 @@ def build_history_index(
             .annotate(
                 day=TruncDate("end_date"),
             )
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
@@ -181,6 +214,7 @@ def build_history_index(
             .annotate(
                 day=TruncDate("end_date"),
             )
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
@@ -191,10 +225,63 @@ def build_history_index(
         video_days = (
             VideoPlay.objects.filter(video__user=user)
             .annotate(day=TruncDate("end_date"))
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
         video_count = _add_days(days, video_days)
+
+    return days, (
+        episode_count,
+        movie_count,
+        reading_count,
+        music_count,
+        podcast_count,
+        video_count,
+    )
+
+
+def _shared_history_days(user, requested_media_types, memo_eras):
+    """``_build_shared_history_days``, reused across the styles of one save.
+
+    A save refreshes the sessions and repeats indexes back to back and the
+    shared scan is identical for both. ``memo_eras`` is the pair of style eras
+    captured before the build: any invalidation bumps an era and so changes the
+    key, and the short TTL bounds anything that changes rows without one.
+    """
+    if memo_eras is None:
+        return _build_shared_history_days(user, requested_media_types)
+    key = "history_shared_days_v{}:{}:{}:{}".format(
+        HISTORY_CACHE_VERSION,
+        user.id,
+        ",".join(sorted(requested_media_types or ["*"])),
+        ":".join(memo_eras),
+    )
+    hit = cache.get(key)
+    if hit is not None:
+        return set(hit[0]), hit[1]
+    days, counts = _build_shared_history_days(user, requested_media_types)
+    cache.set(key, (sorted(days), counts), timeout=HISTORY_SHARED_DAYS_TIMEOUT)
+    return days, counts
+
+
+def build_history_index(
+    user, logging_style_override=None, media_types=None, memo_eras=None
+):
+    """Build an ordered list of active history days for a user."""
+    build_start = time.perf_counter()
+    logging_style = _normalize_logging_style(logging_style_override, user)
+    requested_media_types = expand_history_media_types(media_types)
+    include_game = requested_media_types is None or "game" in requested_media_types
+    include_boardgame = requested_media_types is None or "boardgame" in requested_media_types
+    days, (
+        episode_count,
+        movie_count,
+        reading_count,
+        music_count,
+        podcast_count,
+        video_count,
+    ) = _shared_history_days(user, requested_media_types, memo_eras)
 
     game_count = 0
     boardgame_count = 0
@@ -207,6 +294,7 @@ def build_history_index(
             .annotate(
                 day=TruncDate("end_date"),
             )
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
@@ -218,6 +306,7 @@ def build_history_index(
             .annotate(
                 day=TruncDate("start_date"),
             )
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
@@ -229,6 +318,7 @@ def build_history_index(
             .annotate(
                 day=TruncDate("created_at"),
             )
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
@@ -248,6 +338,7 @@ def build_history_index(
             .annotate(
                 day=TruncDate("end_date"),
             )
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
@@ -259,6 +350,7 @@ def build_history_index(
             .annotate(
                 day=TruncDate("start_date"),
             )
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )
@@ -270,6 +362,7 @@ def build_history_index(
             .annotate(
                 day=TruncDate("created_at"),
             )
+            .order_by()
             .values_list("day", flat=True)
             .distinct()
         )

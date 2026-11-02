@@ -6,9 +6,10 @@ from django.db.models import Q
 from django.utils import timezone
 
 import events
-from app import backfill_queue, cache_safety, history_cache, statistics_sync
+from app import backfill_queue, cache_safety, statistics_sync
 from app.mixins import disable_fetch_releases
 from app.providers import credentials
+from app.services.watch_state import importing_watch_state
 from integrations import connection_health, import_progress
 from integrations.imports import (
     anilist,
@@ -26,10 +27,12 @@ from integrations.imports import (
     kavita,
     kitsu,
     komga,
+    koreader,
     mal,
     mangabaka,
     mdblist,
     mylar,
+    playnite,
     plex,
     pocketcasts,
     psn,
@@ -47,6 +50,7 @@ from integrations.imports import (
     wetrakr,
     xbox,
     yamtrack,
+    youtube_takeout,
 )
 from integrations.jellyfin_client import JellyfinClientError
 from integrations.jellyfin_sync import (
@@ -72,6 +76,42 @@ from integrations.tasks._plex_collection import update_collection_metadata_from_
 
 logger = logging.getLogger(__name__)
 
+# Importers whose every write either saves through the ORM (post_save marks
+# the day), goes through helpers.bulk_create_media, or is reported with
+# helpers.note_bulk_rows, so a changed poll refreshes only the days it touched
+# instead of the whole library. Left out: trakt (durable, resumable chunks),
+# and the one-off file importers, where a full refresh after a big upload is
+# what the user expects. See docs/architecture/statistics-sync.md.
+DAY_SCOPED_IMPORTERS = (
+    pocketcasts.importer,
+    gpodder.importer,
+    simkl.importer,
+    mal.importer,
+    anilist.importer,
+    kitsu.importer,
+    mangabaka.importer,
+    komga.importer,
+    kavita.importer,
+    storyteller.importer,
+    koreader.importer,
+    audiobookshelf.importer,
+    hardcover.sync_importer,
+    psn.importer,
+    steam.importer,
+    xbox.importer,
+    radarr.importer,
+    sonarr.importer,
+    mylar.importer,
+    kapowarr.importer,
+    plex.importer,
+    plex.mark_watched_importer,
+    mdblist.importer,
+    stremio.importer,
+)
+
+# A sync that dies leaves its lock behind; it expires on its own after this.
+PSN_IMPORT_LOCK_SECONDS = 15 * 60
+
 
 
 def import_media(
@@ -91,6 +131,7 @@ def import_media(
         logger.info("import_skipped_inactive_user user_id=%s", user_id)
         return "Import skipped: the account is deactivated."
     task_id = current_task.request.id if current_task and current_task.request else None
+    day_scoped = importer_func in DAY_SCOPED_IMPORTERS
 
     source = getattr(importer_func, "__module__", "").rsplit(".", 1)[-1]
     import_run = None
@@ -127,7 +168,12 @@ def import_media(
             # A Celery task runs no middleware, so without this the importer
             # would not see the user's personal provider keys (#1488).
             credentials.current_user_scope(user),
+            helpers.record_bulk_rows() as bulk_rows,
+            importing_watch_state(),
         ):
+            # Every import shows a stage from its first second, even before
+            # (or without) the importer's own per-item reports.
+            import_progress.report(0, None, "Starting import")
             if oauth_username is None:
                 imported_counts, warnings = importer_func(
                     identifier,
@@ -144,6 +190,10 @@ def import_media(
                     **extra_kwargs,
                 )
             statistics_changes["unchanged"] = not has_imported_media(imported_counts)
+            if day_scoped:
+                statistics_changes["scoped"] = helpers.publish_bulk_rows(
+                    user_id, bulk_rows
+                )
     except BaseException:
         # BaseException so a soft time limit or worker shutdown still leaves a
         # record. RUNNING only: a cancel has already marked the row CANCELLED.
@@ -189,31 +239,20 @@ def import_media(
             raise
     elif has_imported_media(imported_counts) and importer_func == gpodder.importer:
         # GPodder saves each play through the ORM, so post_save already marked
-        # the touched history and statistics days, and the importer queues a
-        # calendar reload for just the items it created. It polls every 15
-        # minutes; a library-wide rebuild per imported play kept a small host
-        # busy (#1158).
+        # the touched history and statistics days (it is day scoped, so no
+        # sweep is left behind), and the importer queues a calendar reload for
+        # just the items it created. It polls every 15 minutes; a library-wide
+        # rebuild per imported play kept a small host busy (#1158).
         logger.info(
             "import_catchup_skipped reason=signal_writes importer=gpodder user_id=%s",
             user_id,
         )
+    elif has_imported_media(imported_counts) and day_scoped:
+        # Rows it wrote were published above, day by day; no library-wide drop.
+        events.tasks.reload_calendar.delay()
     elif has_imported_media(imported_counts):
         events.tasks.reload_calendar.delay()
-
-        # Importers rely heavily on bulk_create_with_history, which bypasses model signals.
-        # Force-clear history cache so month view index pages don't keep stale "empty month"
-        # payloads after imports (notably reproducible with SIMKL imports).
-        history_cache.invalidate_history_cache(user.id, force=True)
-
-        # bulk_create also bypasses the post_save signals that mark statistics days
-        # dirty, and the importer does not report which days it touched. Drop every
-        # day payload; the background sync rebuilds them in budgeted slices while
-        # the last published numbers keep being served.
-        from app import statistics_cache as _statistics_cache
-
-        _statistics_cache.invalidate_all_statistics_days(
-            user.id, reason="media_import"
-        )
+        helpers.publish_everything(user.id)
     else:
         logger.info(
             "calendar_reload_skipped reason=no_items_imported importer=%s user_id=%s",
@@ -350,7 +389,14 @@ def import_yamtrack(file, user_id, mode):
 
 
 @shared_task(name="Import from CLZ")
-def import_clz(file, user_id, mode, media_type=None):
+def import_clz(
+    file,
+    user_id,
+    mode,
+    media_type=None,
+    wishlist_status=None,
+    wishlist_tag=None,
+):
     """Celery task for importing a CLZ (Collectorz) CSV or XML export."""
     return _run_file_import(
         clz.importer,
@@ -358,6 +404,8 @@ def import_clz(file, user_id, mode, media_type=None):
         user_id,
         mode,
         media_type=media_type,
+        wishlist_status=wishlist_status,
+        wishlist_tag=wishlist_tag,
     )
 
 
@@ -365,6 +413,12 @@ def import_clz(file, user_id, mode, media_type=None):
 def import_hltb(file, user_id, mode):
     """Celery task for importing media data from HowLongToBeat."""
     return _run_file_import(hltb.importer, file, user_id, mode)
+
+
+@shared_task(name="Import from Playnite")
+def import_playnite(file, user_id, mode):
+    """Import game data from a Playnite library CSV backup."""
+    return _run_file_import(playnite.importer, file, user_id, mode)
 
 
 @shared_task(name="Import from Grouvee")
@@ -419,16 +473,48 @@ def import_xbox_recurring(user_id, mode="new"):
     return import_media(xbox.importer, None, user_id, mode)
 
 
+def _run_psn_import(user_id, mode, *, on_cache_error):
+    """Serialize syncs for one PSN account.
+
+    Two overlapping syncs would read the same remembered totals and log the
+    same new play twice.
+    """
+    lock_key = f"psn_import_lock_{user_id}"
+    task_id = current_task.request.id if current_task and current_task.request else "1"
+    if not cache_safety.acquire_lock(
+        lock_key,
+        timeout=PSN_IMPORT_LOCK_SECONDS,
+        on_error=on_cache_error,
+        value=task_id,
+    ):
+        logger.info("psn_import status=already_running user_id=%s", user_id)
+        return "Skipped: PlayStation sync already in progress"
+    try:
+        return import_media(psn.importer, None, user_id, mode)
+    finally:
+        cache_safety.release_lock(lock_key)
+
+
 @shared_task(name="Import from PSN")
 def import_psn(user_id, mode="new"):
     """Celery task for importing game data from a connected PSN account."""
-    return import_media(psn.importer, None, user_id, mode)
+    return _run_psn_import(
+        user_id,
+        mode,
+        on_cache_error=cache_safety.ON_ERROR_PROCEED,
+    )
 
 
 @shared_task(name="Import from PSN (Recurring)")
 def import_psn_recurring(user_id, mode="new"):
     """Recurring import task for PSN."""
-    return import_media(psn.importer, None, user_id, mode)
+    # Skip rather than risk two overlapping syncs logging the same play twice;
+    # the next run picks up the same growth.
+    return _run_psn_import(
+        user_id,
+        mode,
+        on_cache_error=cache_safety.ON_ERROR_SKIP,
+    )
 
 
 @shared_task(name="Import from IMDB")
@@ -473,6 +559,12 @@ def import_hardcover_account(user_id, mode="new", username=None):
     return import_media(hardcover.sync_importer, None, user_id, mode)
 
 
+@shared_task(name="Import from YouTube Takeout")
+def import_youtube_takeout(file, user_id, mode):
+    """Celery task for importing YouTube watch history from Google Takeout."""
+    return _run_file_import(youtube_takeout.importer, file, user_id, mode)
+
+
 @shared_task(name="Import from StoryGraph")
 def import_storygraph(file, user_id, mode):
     """Celery task for importing media data from StoryGraph."""
@@ -503,8 +595,10 @@ def sync_plex_mark_watched(user_id):
     user = get_user_model().objects.get(id=user_id)
     account = getattr(user, "plex_account", None)
     if not account or not account.mark_watched_sync_enabled:
+        logger.info("Plex watched-mark poll skipped for user %s: sync is off", user_id)
         return "Skipped: Plex watched-mark sync is off."
     library = user.plex_webhook_libraries or ["all"]
+    logger.info("Plex watched-mark poll starting for user %s", user_id)
     try:
         return import_media(plex.mark_watched_importer, library, user_id, "new")
     except helpers.MediaImportError as exc:
@@ -788,6 +882,10 @@ def import_stremio_recurring(user_id):
     )
 
 
+# Well under the two-hour schedule, well over one run's length.
+POCKETCASTS_RECURRING_COOLDOWN_SECONDS = 30 * 60
+
+
 @shared_task(name="Import from Pocket Casts")
 def import_pocketcasts(user_id, mode="new"):
     """Celery task for importing podcast history from Pocket Casts."""
@@ -815,6 +913,21 @@ def import_pocketcasts(user_id, mode="new"):
 def import_pocketcasts_history(user_id):
     """Recurring import task for Pocket Casts (called every 2 hours via Celery beat)."""
     lock_key = f"pocketcasts_import_lock_{user_id}"
+    # The lock only stops overlap. Copies of this task also queue up behind one
+    # another (broker redelivery after an unclean shutdown, plus beat catching
+    # up on a lost last_run_at), and each then runs a full ~8 minute poll in
+    # turn. A poll that started recently already saw everything a repeat would.
+    if not cache_safety.acquire_lock(
+        f"pocketcasts_recurring_cooldown_{user_id}",
+        timeout=POCKETCASTS_RECURRING_COOLDOWN_SECONDS,
+        on_error=cache_safety.ON_ERROR_SKIP,
+        value="1",
+    ):
+        logger.info(
+            "Pocket Casts recurring import ran recently for user %s, skipping",
+            user_id,
+        )
+        return "Skipped: recent import"
     # Recurring, so skipping a run when the cache is unavailable is cheap - the
     # next one is two hours away and the manual path above stays open.
     if not cache_safety.acquire_lock(

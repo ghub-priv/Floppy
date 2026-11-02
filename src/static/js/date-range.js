@@ -1,3 +1,4 @@
+(() => {
 // Mirrors app/config.py's MEDIA_TYPE_CONFIG stats_color + svg_icon fields so
 // the Average Rating card's icons match the rest of the app without a round
 // trip to the server for markup that's identical across every user.
@@ -128,7 +129,11 @@ function dateRangePicker(options = {}) {
       const totalMinutes = s.total_minutes || 0;
       const totalHours = Math.round(totalMinutes / 60);
       const totalDays = Math.floor(totalMinutes / 60 / 24);
-      return { ...s, longest_streak_dates_display: dates, total_hours: totalHours, total_days: totalDays };
+      // Match the charts: format weekday names for the current UI locale,
+      // even when a warm statistics snapshot stores the English name.
+      const weekday = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].indexOf(s.most_active_day);
+      const weekdayLabel = weekday < 0 ? s.most_active_day : new Date(2024, 0, weekday + 1).toLocaleDateString(document.documentElement.lang || undefined, { weekday: "long" });
+      return { ...s, most_active_day_label: weekdayLabel, longest_streak_dates_display: dates, total_hours: totalHours, total_days: totalDays };
     },
 
     get currentConsumption() {
@@ -287,6 +292,13 @@ function dateRangePicker(options = {}) {
           this.updateFilteredCharts();
         }
       });
+      const refitMenus = () => {
+        if (this.isRangeOpen || this.isMediaTypeOpen || this.isCompareOpen) {
+          this.fitOpenMenus();
+        }
+      };
+      window.addEventListener("resize", refitMenus);
+      window.addEventListener("scroll", refitMenus, { passive: true });
     },
 
     toggleRangeDropdown() {
@@ -294,7 +306,24 @@ function dateRangePicker(options = {}) {
       if (this.isRangeOpen) {
         this.isCompareOpen = false;
         this.isMediaTypeOpen = false;
+        this.fitOpenMenus();
       }
+    },
+
+    // The menus are positioned under their buttons, and where that is depends on
+    // how the toolbar wraps and how far the page is scrolled. Cap each open menu
+    // to the room left below it so it scrolls instead of leaving the window.
+    fitOpenMenus() {
+      this.$nextTick(() => {
+        this.$root.querySelectorAll(".stats-dropdown-panel").forEach((panel) => {
+          if (!panel.offsetParent) {
+            return;
+          }
+          // offsetTop ignores the open/close scale animation, unlike getBoundingClientRect.
+          const top = panel.offsetParent.getBoundingClientRect().top + panel.offsetTop;
+          panel.style.maxHeight = `${Math.max(160, window.innerHeight - top - 16)}px`;
+        });
+      });
     },
 
     toggleCompareDropdown() {
@@ -306,6 +335,7 @@ function dateRangePicker(options = {}) {
       if (this.isCompareOpen) {
         this.isRangeOpen = false;
         this.isMediaTypeOpen = false;
+        this.fitOpenMenus();
       }
     },
 
@@ -314,6 +344,7 @@ function dateRangePicker(options = {}) {
       if (this.isMediaTypeOpen) {
         this.isRangeOpen = false;
         this.isCompareOpen = false;
+        this.fitOpenMenus();
       }
     },
 
@@ -661,8 +692,8 @@ function dateRangePicker(options = {}) {
     },
 
     getDateFormat() {
-      const scriptTag = document.querySelector("script[data-date-format]");
-      const selectedFormat = scriptTag?.dataset.dateFormat;
+      const formatElement = document.querySelector("[data-date-format]");
+      const selectedFormat = formatElement?.dataset.dateFormat;
       const dateFormats = this.getDateFormatValues();
 
       if (
@@ -935,3 +966,5 @@ if (typeof window !== "undefined") {
   // The separate asset is loaded outside the inline Alpine scope.
   window.dateRangePicker = dateRangePicker;
 }
+
+})();

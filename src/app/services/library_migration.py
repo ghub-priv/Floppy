@@ -601,28 +601,33 @@ def migrate_library_item(
         target_media_id,
     )
 
+    # The flat-anime preflight reads provider metadata. Run it before the
+    # transaction: SQLite has one writer, and a slow provider response must not
+    # hold the write lock for the whole move.
+    flat_preflight = None
+    if plan.source_shape == "flat":
+        try:
+            flat_preflight = anime_migration.preflight_flat_anime_to_grouped(
+                user,
+                source_item,
+                plan.target_source,
+            )
+        except services.ProviderAPIError:
+            _migration_error(
+                "The verified Anime mapping could not be loaded; nothing was changed."
+            )
+        except anime_migration.AnimeMigrationError as error:
+            _migration_error(str(error))
+        if flat_preflight.provider_series_id != plan.target_media_id:
+            _migration_error("The verified Anime mapping changed; retry the move.")
+
     with transaction.atomic(), suppress_media_change_side_effects():
         source_item = Item.objects.select_for_update().get(pk=plan.source_item_id)
         if _owned_source_tracker(user, source_item) is None:
             _migration_error("The source tracking entry changed; retry the move.")
 
         if plan.source_shape == "flat":
-            try:
-                preflight = anime_migration.preflight_flat_anime_to_grouped(
-                    user,
-                    source_item,
-                    plan.target_source,
-                )
-            except services.ProviderAPIError:
-                _migration_error(
-                    "The verified Anime mapping could not be loaded; nothing was changed."
-                )
-            except anime_migration.AnimeMigrationError as error:
-                _migration_error(str(error))
-            if preflight.provider_series_id != plan.target_media_id:
-                _migration_error(
-                    "The verified Anime mapping changed; retry the move."
-                )
+            preflight = flat_preflight
             try:
                 result = anime_migration.persist_flat_anime_migration(preflight)
             except anime_migration.AnimeMigrationError as error:

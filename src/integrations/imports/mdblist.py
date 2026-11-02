@@ -183,6 +183,7 @@ class MDBListImporter(TraktMetadataResolverMixin):
 
         # Track existing media to handle "new" mode correctly
         self.existing_media = helpers.get_existing_media(user)
+        self.deleted_media = helpers.get_deleted_media(user)
 
         # Track existing plays for exact dedupe and distinct-episode roll-up.
         (
@@ -258,12 +259,14 @@ class MDBListImporter(TraktMetadataResolverMixin):
                 app.models.Season,
                 fields=["status"],
             )
+            helpers.note_bulk_rows(self.completed_seasons)
         if self.dropped_tvs:
             bulk_update_with_history(
                 self.dropped_tvs,
                 app.models.TV,
                 fields=["status"],
             )
+            helpers.note_bulk_rows(self.dropped_tvs)
 
         imported_counts = {
             media_type: len(media_list)
@@ -467,6 +470,7 @@ class MDBListImporter(TraktMetadataResolverMixin):
             Sources.TMDB.value,
             tmdb_id,
             self.mode,
+            deleted_media=self.deleted_media,
         ):
             return
 
@@ -508,6 +512,7 @@ class MDBListImporter(TraktMetadataResolverMixin):
             Sources.TMDB.value,
             tmdb_id,
             self.mode,
+            deleted_media=self.deleted_media,
         ):
             return
 
@@ -572,6 +577,9 @@ class MDBListImporter(TraktMetadataResolverMixin):
 
         tmdb_id = self._resolve_entry_tmdb_id(show_data, MediaTypes.TV.value)
         if not tmdb_id:
+            return
+
+        if tmdb_id in self.deleted_media[MediaTypes.TV.value][Sources.TMDB.value]:
             return
 
         episode_watch_key = (tmdb_id, season_number, episode_number, watched_at_dt)
@@ -803,6 +811,7 @@ class MDBListImporter(TraktMetadataResolverMixin):
             Sources.TMDB.value,
             tmdb_id,
             self.mode,
+            deleted_media=self.deleted_media,
         ):
             return
 
@@ -902,6 +911,7 @@ class MDBListImporter(TraktMetadataResolverMixin):
             Sources.TMDB.value,
             tmdb_id,
             self.mode,
+            deleted_media=self.deleted_media,
         ):
             return
 
@@ -983,10 +993,12 @@ class MDBListImporter(TraktMetadataResolverMixin):
                 item__episode_number=episode_number,
             )
             if episodes.exists():
-                episodes.exclude(score=scaled_score).update(
-                    score=scaled_score,
-                    scored_at=timezone.now(),
-                )
+                # A queryset update sends no save signal; publish these days.
+                changed = list(episodes.exclude(score=scaled_score))
+                app.models.Episode.objects.filter(
+                    pk__in=[episode.pk for episode in changed],
+                ).update(score=scaled_score, scored_at=timezone.now())
+                helpers.note_bulk_rows(changed)
                 return
 
         ep_key = f"{tmdb_id}:{season_number}:{episode_number}"
@@ -1018,6 +1030,7 @@ class MDBListImporter(TraktMetadataResolverMixin):
             Sources.TMDB.value,
             tmdb_id,
             self.mode,
+            deleted_media=self.deleted_media,
         ):
             return
 

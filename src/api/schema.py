@@ -36,10 +36,28 @@ class LiveSchemaView(SpectacularAPIView):
         OpenApiJsonRenderer2,
     ]
 
+    # ``URL_FORMAT_OVERRIDE`` is disabled project-wide, so ``?format=`` is
+    # honoured here only. Other values fall back to Accept negotiation (#1049).
+    FORMAT_QUERY_RENDERERS = {
+        "json": OpenApiJsonRenderer2,
+        "yaml": OpenApiTextYamlRenderer,
+    }
+
+    def perform_content_negotiation(self, request, force=False):
+        """Let ``?format=json|yaml`` pick the renderer; otherwise use Accept."""
+        renderer_class = self.FORMAT_QUERY_RENDERERS.get(request.query_params.get("format"))
+        if renderer_class is not None:
+            renderer = renderer_class()
+            return renderer, renderer.media_type
+        return super().perform_content_negotiation(request, force)
+
     def get(self, request, *args, **kwargs):
         """Serve dynamic OpenAPI schema with text/yaml content-type and inline disposition."""
         response = super().get(request, *args, **kwargs)
-        response["Content-Disposition"] = 'inline; filename="openapi-live.yaml"'
+        is_json = request.accepted_renderer.format == "json"
+        response["Content-Disposition"] = (
+            f'inline; filename="openapi-live.{"json" if is_json else "yaml"}"'
+        )
         return response
 
 
@@ -52,6 +70,15 @@ MEDIA_TYPE_PARAM = OpenApiParameter(
     enum=MEDIA_TYPE_VALID_LIST,
     description="Media type. Does not include `season`/`episode` — those are "
     "addressed via separate path segments under `tv`.",
+)
+
+LIBRARY_MEDIA_TYPE_PARAM = OpenApiParameter(
+    name="library_media_type",
+    type=str,
+    location=OpenApiParameter.QUERY,
+    required=False,
+    description="Library the tv show, season or episode is stored in. Set to "
+    "`anime` for titles in the Anime library; omitted means the regular TV library.",
 )
 
 MEDIA_TYPE_COMPLETE_PARAM = OpenApiParameter(
@@ -283,6 +310,7 @@ MEDIA_LIST_FILTER_PARAMS = [
             "date_added",
             "start_date",
             "end_date",
+            "last_watched",
             "next_episode_air_date",
             "time_left",
             "added",

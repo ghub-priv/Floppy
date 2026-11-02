@@ -14,6 +14,7 @@ from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 
+from integrations.models import DEFAULT_INTEGRATION_SCOPES
 from integrations.oauth_models import (
     OAUTH_DEVICE_CODE_GRANT,
     OAUTH_DEVICE_CODE_LIFETIME_SECONDS,
@@ -138,9 +139,15 @@ def oauth_device_authorization(request: HttpRequest) -> JsonResponse:
             "This client cannot use the device authorization grant.",
         )
 
+    # A client that names no scope gets the tracking preset, not everything
+    # it is allowed: broader scopes such as lists:write must be asked for.
     requested_scopes = normalise_scopes(
         data.get("scope"),
-        default=client.allowed_scopes,
+        default=[
+            scope
+            for scope in DEFAULT_INTEGRATION_SCOPES
+            if scope in client.allowed_scopes
+        ],
     )
     if not requested_scopes:
         return _oauth_error("invalid_scope", "At least one scope is required.")

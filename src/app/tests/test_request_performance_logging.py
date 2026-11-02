@@ -206,7 +206,7 @@ class RequestTimingBreakdownTests(TestCase):
             response["Server-Timing"],
             r"^total;dur=\d+, cpu;dur=[\d.]+, db;dur=[\d.]+, provider;dur=[\d.]+, "
             r"cache;dur=[\d.]+, broker;dur=[\d.]+, db_connect;dur=[\d.]+, "
-            r"render;dur=[\d.]+, unclassified;dur=[\d.]+$",
+            r"render;dur=[\d.]+, unclassified;dur=[\d.]+, queries;desc=\"\d+\"$",
         )
 
         anonymous_response, _line = self._run(lambda _request: HttpResponse("ok"))

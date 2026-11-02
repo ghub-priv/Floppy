@@ -114,7 +114,9 @@ def _episode_cache_key(media_id, season_number, episode_number, language=None):
     )
 
 
-def metadata_cache_keys(media_id, media_type, season_number=None, episode_number=None):
+def metadata_cache_keys(
+    media_id, media_type, season_number=None, episode_number=None, language=None
+):
     """Return the versioned TMDB cache keys for an item.
 
     The movie and season keys carry a strategy version, so callers that clear
@@ -123,17 +125,17 @@ def metadata_cache_keys(media_id, media_type, season_number=None, episode_number
     """
     keys = []
     if media_type == MediaTypes.MOVIE.value:
-        keys.append(_movie_cache_key(media_id))
+        keys.append(_movie_cache_key(media_id, language))
     elif media_type == MediaTypes.TV.value:
-        keys.append(_tv_cache_key(media_id))
+        keys.append(_tv_cache_key(media_id, language))
     elif media_type == MediaTypes.SEASON.value and season_number is not None:
-        keys.append(_season_cache_key(media_id, season_number))
+        keys.append(_season_cache_key(media_id, season_number, language))
     elif (
         media_type == MediaTypes.EPISODE.value
         and season_number is not None
         and episode_number is not None
     ):
-        keys.append(_episode_cache_key(media_id, season_number, episode_number))
+        keys.append(_episode_cache_key(media_id, season_number, episode_number, language))
     return keys
 
 
@@ -194,10 +196,11 @@ def get_external_links(external_ids, tmdb_id=None):
 def _tvdb_override_cache_key(media_id):
     """Return cache key for a preferred TVDB override on a TMDB show.
 
-    The ``v2`` drops overrides written before #1312, when Jellyfin/Emby
-    episode TVDB ids were saved here as if they were the show's.
+    The version drops overrides that saved an episode TVDB id as if it were
+    the show's: ``v2`` those from Jellyfin/Emby (#1312), ``v3`` those from
+    modern-agent Plex episodes.
     """
-    return f"{Sources.TMDB.value}_tvdb_override_v2_{media_id}"
+    return f"{Sources.TMDB.value}_tvdb_override_v3_{media_id}"
 
 
 def get_tvdb_id_override(media_id):
@@ -745,7 +748,7 @@ def cache_fallback_season_metadata(media_id, season_number, tv_data, season_data
         if episode.get("episode_number") is not None
     ]
     max_progress = season_data.get("max_progress") or (
-        max(episode_numbers) if episode_numbers else None
+        len(set(episode_numbers)) if episode_numbers else None
     )
 
     runtimes = [
@@ -1006,6 +1009,11 @@ def fetch_and_cache_seasons(media_id, season_numbers, tv_data, language=None, *,
             handle_error(error)
 
         if is_first_batch:
+            # tv() records the backdrop it already fetched; do the same here so
+            # a season/episode page doesn't pay a second /tv request for it.
+            backdrops.remember_tmdb_backdrop(
+                MediaTypes.TV.value, media_id, response.get("backdrop_path")
+            )
             # Always refresh the root TV payload from the same TMDB response
             # so season fetches can pick up updated external_ids (including
             # tvdb_id) even when the show cache already existed before this
@@ -1431,7 +1439,10 @@ def process_season(response, providers_response, credits_response=None):
         "source": Sources.TMDB.value,
         "media_type": MediaTypes.SEASON.value,
         "season_title": response["name"],
-        "max_progress": episodes[-1]["episode_number"] if episodes else 0,
+        # Count, not the last number: anime seasons continue the numbering
+        # (51-100), so the last number is not how many episodes the season has.
+        "max_progress": len(episodes),
+        "last_episode_number": episodes[-1]["episode_number"] if episodes else 0,
         "image": get_image_url(response["poster_path"]),
         "season_number": response["season_number"],
         "synopsis": get_synopsis(response["overview"]),
@@ -2596,6 +2607,7 @@ def episode(media_id, season_number, episode_number, language=None):
             "season_title": season_metadata.get("season_title")
             or f"Season {season_number}",
             "episode_title": response.get("name") or f"Episode {episode_number}",
+            "synopsis": get_synopsis(response.get("overview")),
             "score": round(vote_average, 1) if vote_average else None,
             "score_count": vote_count or None,
             "cast": get_cast_credits({"cast": cast_rows}),

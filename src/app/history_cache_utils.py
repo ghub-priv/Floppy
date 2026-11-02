@@ -12,6 +12,7 @@ from django.db import models
 from django.utils import timezone
 
 from app.models import MediaTypes, Music
+from app.stats_utils import _coerce_genre_list
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,25 @@ class UnsupportedHistoryMediaTypeError(ValueError):
     def __init__(self, token):
         """Build an error containing the rejected token."""
         super().__init__(f"Unsupported history media type: {token}")
+
+
+def history_entry_sort_key(entry):
+    """Order a history row newest first.
+
+    Callers sort with ``reverse=True``. ``played_at_local`` is the real
+    order. YouTube only has a calendar day, so every play that day shares
+    noon and this key would otherwise tie. ``instance_id`` is the row id.
+    The sync posts a batch oldest-first, so the higher id is the later watch.
+
+    @param entry - History entry dict.
+    @returns Tuple of played-at, season, episode, and row id.
+    """
+    return (
+        entry["played_at_local"],
+        entry.get("season_number") or 0,
+        entry.get("episode_number") or 0,
+        entry.get("instance_id") or 0,
+    )
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -38,7 +58,7 @@ def _coerce_timedelta(value, default):
         return default
 
 
-HISTORY_CACHE_VERSION = 22
+HISTORY_CACHE_VERSION = 25
 HISTORY_INDEX_PREFIX = f"history_index_v{HISTORY_CACHE_VERSION}"
 HISTORY_DAY_PREFIX = f"history_day_v{HISTORY_CACHE_VERSION}"
 HISTORY_CACHE_PREFIX = HISTORY_INDEX_PREFIX
@@ -410,36 +430,6 @@ def _localize_datetime(value):
 
 
 # ── Genre helpers ─────────────────────────────────────────────────────────────
-
-
-def _coerce_genre_list(value):
-    """Normalize a genre field (string, dict, or list) into a list of strings."""
-
-    def _coerce_one(v):
-        if not v:
-            return None
-        if isinstance(v, str):
-            return v
-        if isinstance(v, dict):
-            return v.get("name") or v.get("tag") or v.get("label")
-        return str(v)
-
-    if not value:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, dict):
-        coerced = _coerce_one(value)
-        return [coerced] if coerced else []
-    if isinstance(value, (list, tuple)):
-        out = []
-        for v in value:
-            coerced = _coerce_one(v)
-            if coerced:
-                out.append(coerced)
-        return out
-    coerced = _coerce_one(value)
-    return [coerced] if coerced else []
 
 
 def _resolve_genres(*items):
