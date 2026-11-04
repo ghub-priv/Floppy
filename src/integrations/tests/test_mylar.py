@@ -56,8 +56,9 @@ def _response(payload, status_code=200):
     return response
 
 
-def _fake_mylar(url, params=None, **_kwargs):
+def _fake_mylar(method, url, params=None, **_kwargs):
     """Answer like a Mylar3 server holding one series, Saga."""
+    assert method == "GET"
     if params["cmd"] == "getIndex":
         return _response(INDEX)
     if params["cmd"] == "getComic":
@@ -83,7 +84,7 @@ class MylarImporterTests(TestCase):
             ).values_list("item__media_id", flat=True),
         )
 
-    @patch("integrations.imports.mylar.requests.get", side_effect=_fake_mylar)
+    @patch("integrations.imports.mylar.send_to_self_hosted_pinned", side_effect=_fake_mylar)
     def test_downloaded_and_archived_issues_become_owned(self, mock_get):
         """Only issues whose file is on disk are marked as owned."""
         counts, warnings = mylar.importer(None, self.user, "new")
@@ -104,12 +105,12 @@ class MylarImporterTests(TestCase):
         )
         self.assertEqual(Item.objects.get(media_id="401").title, "Saga Annual #1")
         first_call = mock_get.call_args_list[0]
-        self.assertEqual(first_call.args[0], "https://mylar.local:8090/api")
+        self.assertEqual(first_call.args[:2], ("GET", "https://mylar.local:8090/api"))
         self.assertEqual(first_call.kwargs["params"]["apikey"], "mylar-key")
         self.instance.refresh_from_db()
         self.assertIsNotNone(self.instance.last_sync_at)
 
-    @patch("integrations.imports.mylar.requests.get", side_effect=_fake_mylar)
+    @patch("integrations.imports.mylar.send_to_self_hosted_pinned", side_effect=_fake_mylar)
     def test_second_sync_creates_no_duplicates(self, _mock_get):
         mylar.importer(None, self.user, "new")
         mylar.importer(None, self.user, "new")
@@ -123,11 +124,11 @@ class MylarImporterTests(TestCase):
 
     def test_issue_no_longer_on_disk_stops_being_owned(self):
         """An issue that goes back to Wanted drops its synced copy on the next run."""
-        with patch("integrations.imports.mylar.requests.get", side_effect=_fake_mylar):
+        with patch("integrations.imports.mylar.send_to_self_hosted_pinned", side_effect=_fake_mylar):
             mylar.importer(None, self.user, "new")
 
-        def _issue_301_wanted(url, params=None, **kwargs):
-            response = _fake_mylar(url, params=params, **kwargs)
+        def _issue_301_wanted(method, url, params=None, **kwargs):
+            response = _fake_mylar(method, url, params=params, **kwargs)
             if params["cmd"] == "getComic" and params["id"] == "18166":
                 data = copy.deepcopy(SAGA)
                 data["data"]["issues"][0]["status"] = "Wanted"
@@ -135,7 +136,7 @@ class MylarImporterTests(TestCase):
             return response
 
         with patch(
-            "integrations.imports.mylar.requests.get", side_effect=_issue_301_wanted
+            "integrations.imports.mylar.send_to_self_hosted_pinned", side_effect=_issue_301_wanted
         ):
             counts, _ = mylar.importer(None, self.user, "new")
 
@@ -147,23 +148,23 @@ class MylarImporterTests(TestCase):
 
     def test_failed_sync_keeps_existing_copies(self):
         """A run that stops part way must not treat unread series as removed."""
-        with patch("integrations.imports.mylar.requests.get", side_effect=_fake_mylar):
+        with patch("integrations.imports.mylar.send_to_self_hosted_pinned", side_effect=_fake_mylar):
             mylar.importer(None, self.user, "new")
 
-        def _comic_fails(url, params=None, **kwargs):
+        def _comic_fails(method, url, params=None, **kwargs):
             if params["cmd"] == "getComic":
                 raise requests.exceptions.ReadTimeout("read timed out")
-            return _fake_mylar(url, params=params, **kwargs)
+            return _fake_mylar(method, url, params=params, **kwargs)
 
         with (
-            patch("integrations.imports.mylar.requests.get", side_effect=_comic_fails),
+            patch("integrations.imports.mylar.send_to_self_hosted_pinned", side_effect=_comic_fails),
             self.assertRaises(helpers.MediaImportError),
         ):
             mylar.importer(None, self.user, "new")
 
         self.assertEqual(self._owned_issue_ids(), {"301", "302", "401"})
 
-    @patch("integrations.imports.mylar.requests.get", side_effect=_fake_mylar)
+    @patch("integrations.imports.mylar.send_to_self_hosted_pinned", side_effect=_fake_mylar)
     def test_existing_issue_item_is_reused(self, _mock_get):
         """An issue already in Floppy keeps its own title and row."""
         existing = Item.objects.create(
@@ -183,7 +184,7 @@ class MylarImporterTests(TestCase):
             CollectionSourceState.objects.filter(item=existing, source="mylar").exists()
         )
 
-    @patch("integrations.imports.mylar.requests.get")
+    @patch("integrations.imports.mylar.send_to_self_hosted_pinned")
     def test_rejected_key_in_ok_response_marks_connection_broken(self, mock_get):
         """Mylar3 reports a wrong key as HTTP 200 with success false."""
         mock_get.return_value = _response(
@@ -196,7 +197,7 @@ class MylarImporterTests(TestCase):
         self.instance.refresh_from_db()
         self.assertTrue(self.instance.connection_broken)
 
-    @patch("integrations.imports.mylar.requests.get")
+    @patch("integrations.imports.mylar.send_to_self_hosted_pinned")
     def test_other_mylar_error_does_not_mark_connection_broken(self, mock_get):
         mock_get.return_value = _response(
             {"success": False, "error": {"code": 400, "message": "Missing parameter: id"}}
@@ -209,7 +210,7 @@ class MylarImporterTests(TestCase):
         self.instance.refresh_from_db()
         self.assertFalse(self.instance.connection_broken)
 
-    @patch("integrations.imports.mylar.requests.get")
+    @patch("integrations.imports.mylar.send_to_self_hosted_pinned")
     def test_timeout_is_recorded_without_leaking_the_key(self, mock_get):
         """The key is in the query string, so the error text must not repeat it."""
         mock_get.side_effect = requests.exceptions.ConnectTimeout(
@@ -263,7 +264,7 @@ class MylarViewTests(TestCase):
         )
 
     @patch("integrations.views.tasks.import_mylar.delay")
-    @patch("integrations.imports.mylar.requests.get")
+    @patch("integrations.imports.mylar.send_to_self_hosted_pinned")
     def test_connect_with_bad_key_saves_nothing(self, mock_get, mock_delay):
         mock_get.return_value = _response(
             {"success": False, "error": {"code": 400, "message": "Incorrect API key"}}
