@@ -68,8 +68,9 @@ def _response(payload, status_code=200):
     return response
 
 
-def _fake_kapowarr(url, params=None, timeout=None, allow_redirects=False):
+def _fake_kapowarr(method, url, params=None, timeout=None, allow_redirects=False):
     """Answer like a Kapowarr server holding one series, Saga."""
+    assert method == "GET"
     if url.endswith("/api/volumes"):
         return _response(VOLUMES)
     if url.endswith("/api/volumes/1"):
@@ -95,7 +96,7 @@ class KapowarrImporterTests(TestCase):
             ).values_list("item__media_id", flat=True),
         )
 
-    @patch("integrations.imports.kapowarr.requests.get", side_effect=_fake_kapowarr)
+    @patch("integrations.imports.kapowarr.send_to_self_hosted_pinned", side_effect=_fake_kapowarr)
     def test_issues_with_files_become_owned(self, mock_get):
         """Only issues Kapowarr has a file for are marked as owned."""
         counts, warnings = kapowarr.importer(None, self.user, "new")
@@ -116,15 +117,15 @@ class KapowarrImporterTests(TestCase):
         self.assertEqual(issue.title, "Saga #1: Chapter One")
         self.assertEqual(Item.objects.get(media_id="302").title, "Saga #2")
         first_call = mock_get.call_args_list[0]
-        self.assertEqual(first_call.args[0], "https://kapowarr.local:5656/api/volumes")
+        self.assertEqual(first_call.args[:2], ("GET", "https://kapowarr.local:5656/api/volumes"))
         self.assertEqual(first_call.kwargs["params"]["api_key"], "kapowarr-key")
         # The empty volume is skipped from the list, without a detail request.
-        requested = [call.args[0] for call in mock_get.call_args_list]
+        requested = [call.args[1] for call in mock_get.call_args_list]
         self.assertNotIn("https://kapowarr.local:5656/api/volumes/2", requested)
         self.instance.refresh_from_db()
         self.assertIsNotNone(self.instance.last_sync_at)
 
-    @patch("integrations.imports.kapowarr.requests.get", side_effect=_fake_kapowarr)
+    @patch("integrations.imports.kapowarr.send_to_self_hosted_pinned", side_effect=_fake_kapowarr)
     def test_second_sync_creates_no_duplicates(self, _mock_get):
         kapowarr.importer(None, self.user, "new")
         kapowarr.importer(None, self.user, "new")
@@ -137,12 +138,12 @@ class KapowarrImporterTests(TestCase):
 
     def test_issue_whose_file_is_gone_stops_being_owned(self):
         with patch(
-            "integrations.imports.kapowarr.requests.get", side_effect=_fake_kapowarr
+            "integrations.imports.kapowarr.send_to_self_hosted_pinned", side_effect=_fake_kapowarr
         ):
             kapowarr.importer(None, self.user, "new")
 
-        def _issue_301_deleted(url, params=None, timeout=None, allow_redirects=False):
-            response = _fake_kapowarr(url, params=params, timeout=timeout)
+        def _issue_301_deleted(method, url, params=None, timeout=None, allow_redirects=False):
+            response = _fake_kapowarr(method, url, params=params, timeout=timeout)
             if url.endswith("/api/volumes/1"):
                 data = copy.deepcopy(SAGA)
                 data["result"]["issues"][0]["files"] = []
@@ -150,7 +151,7 @@ class KapowarrImporterTests(TestCase):
             return response
 
         with patch(
-            "integrations.imports.kapowarr.requests.get",
+            "integrations.imports.kapowarr.send_to_self_hosted_pinned",
             side_effect=_issue_301_deleted,
         ):
             counts, _ = kapowarr.importer(None, self.user, "new")
@@ -160,18 +161,18 @@ class KapowarrImporterTests(TestCase):
 
     def test_failed_sync_keeps_existing_copies(self):
         with patch(
-            "integrations.imports.kapowarr.requests.get", side_effect=_fake_kapowarr
+            "integrations.imports.kapowarr.send_to_self_hosted_pinned", side_effect=_fake_kapowarr
         ):
             kapowarr.importer(None, self.user, "new")
 
-        def _volume_fails(url, params=None, timeout=None, allow_redirects=False):
+        def _volume_fails(method, url, params=None, timeout=None, allow_redirects=False):
             if url.endswith("/api/volumes/1"):
                 raise requests.exceptions.ReadTimeout("read timed out")
-            return _fake_kapowarr(url, params=params, timeout=timeout)
+            return _fake_kapowarr(method, url, params=params, timeout=timeout)
 
         with (
             patch(
-                "integrations.imports.kapowarr.requests.get", side_effect=_volume_fails
+                "integrations.imports.kapowarr.send_to_self_hosted_pinned", side_effect=_volume_fails
             ),
             self.assertRaises(helpers.MediaImportError),
         ):
@@ -192,7 +193,7 @@ class KapowarrImporterTests(TestCase):
         )
 
         with patch(
-            "integrations.imports.kapowarr.requests.get", side_effect=_fake_kapowarr
+            "integrations.imports.kapowarr.send_to_self_hosted_pinned", side_effect=_fake_kapowarr
         ):
             kapowarr.importer(None, self.user, "new")
 
@@ -200,7 +201,7 @@ class KapowarrImporterTests(TestCase):
             CollectionSourceState.objects.filter(item=item, source="mylar").exists()
         )
 
-    @patch("integrations.imports.kapowarr.requests.get")
+    @patch("integrations.imports.kapowarr.send_to_self_hosted_pinned")
     def test_rejected_key_marks_connection_broken(self, mock_get):
         """Kapowarr answers a wrong key with 401 and ApiKeyInvalid."""
         mock_get.return_value = _response(
@@ -213,7 +214,7 @@ class KapowarrImporterTests(TestCase):
         self.instance.refresh_from_db()
         self.assertTrue(self.instance.connection_broken)
 
-    @patch("integrations.imports.kapowarr.requests.get")
+    @patch("integrations.imports.kapowarr.send_to_self_hosted_pinned")
     def test_timeout_is_recorded_without_leaking_the_key(self, mock_get):
         mock_get.side_effect = requests.exceptions.ConnectTimeout(
             "Max retries exceeded with url: /api/volumes?api_key=kapowarr-key"
@@ -266,7 +267,7 @@ class KapowarrViewTests(TestCase):
         )
 
     @patch("integrations.views.tasks.import_kapowarr.delay")
-    @patch("integrations.imports.kapowarr.requests.get")
+    @patch("integrations.imports.kapowarr.send_to_self_hosted_pinned")
     def test_connect_with_bad_key_saves_nothing(self, mock_get, mock_delay):
         mock_get.return_value = _response(
             {"error": "ApiKeyInvalid", "result": {}}, status_code=401
