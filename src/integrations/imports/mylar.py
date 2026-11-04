@@ -17,7 +17,7 @@ from integrations.imports.helpers import (
     find_item_across_buckets,
 )
 from integrations.models import MylarInstance
-from integrations.safe_fetch import SelfHostedUrlError, send_to_self_hosted
+from integrations.safe_fetch import SelfHostedUrlError, send_to_self_hosted_pinned
 from integrations.source_sync import (
     prune_collection_source_states,
     upsert_collection_source_state,
@@ -41,8 +41,8 @@ class MylarClient:
 
     def _request(self, cmd: str, **params):
         try:
-            response = send_to_self_hosted(
-                requests.get,
+            response = send_to_self_hosted_pinned(
+                "GET",
                 f"{self.base_url}/api",
                 params={"apikey": self.api_key, "cmd": cmd, **params},
                 timeout=20,
