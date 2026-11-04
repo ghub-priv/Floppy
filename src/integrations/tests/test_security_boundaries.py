@@ -77,16 +77,22 @@ class SelfHostedRedirectBoundaryTests(SimpleTestCase):
         self.assertEqual(send.call_count, 1)
         self.assertFalse(send.call_args.kwargs["allow_redirects"])
 
-    @patch("integrations.safe_fetch.validate_self_hosted_url")
-    @patch("integrations.imports.kapowarr.requests.get")
-    def test_kapowarr_refuses_cross_host_redirect(self, get, validate):
-        get.return_value = Mock(
+    @patch(
+        "integrations.safe_fetch.socket.getaddrinfo",
+        return_value=[(0, 0, 0, "", ("192.168.40.20", 0))],
+    )
+    @patch("integrations.safe_fetch._send_pinned_self_hosted")
+    def test_kapowarr_refuses_cross_host_redirect(self, send, lookup):
+        send.return_value = Mock(
             status_code=302, headers={"Location": "https://attacker.example/"}
         )
         with self.assertRaises(MediaImportError):
             KapowarrClient("https://comics.example", "secret").healthcheck()
-        self.assertEqual(get.call_count, 1)
-        self.assertFalse(get.call_args.kwargs["allow_redirects"])
+        lookup.assert_called_once()
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[0], "GET")
+        self.assertEqual(str(send.call_args.args[2]), "192.168.40.20")
+        self.assertFalse(send.call_args.kwargs["allow_redirects"])
 
     @patch("integrations.safe_fetch.validate_self_hosted_url")
     @patch("integrations.plex.requests.get")
