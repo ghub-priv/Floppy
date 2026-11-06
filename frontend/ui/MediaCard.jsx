@@ -413,6 +413,9 @@ export function MediaCard({ model, slots, labels, selection, host }) {
   const art = model.image;
   const imgClass = `media-card-poster w-full ${aspect[model.shape]} bg-[var(--color-surface-alt)] object-cover`;
   const bar = model.progressBar;
+  const rating = live?.rating !== undefined ? (live.rating || null) : model.rating;
+  const cardRating = rating ? { ...rating, rateUrl: rating.rateUrl || model.rating?.rateUrl } : null;
+  const hasRatingRow = model.scoreText != null || (model.ratingId && cardRating);
   return <>
     <div className="media-card-visual relative">
       {model.recommend ? <div className="cursor-pointer"><img decoding="sync" loading="lazy" alt={model.title}
@@ -452,16 +455,16 @@ export function MediaCard({ model, slots, labels, selection, host }) {
           : <a href={model.href} title={model.title} {...(model.boost ? { 'hx-boost': 'true' } : {})}
           className={`media-card-title text-sm font-semibold text-[var(--color-text)] ${model.publicView ? '' : 'hover:text-[var(--color-link)] '}transition duration-300 line-clamp-1 min-w-0`}>{model.title}</a>}
         {model.altTitle && <AltTitle text={model.altTitle} label={labels.altTitle} />}
-        {model.scoreText != null && <span className="flex items-center gap-1 text-xs text-yellow-300 shrink-0">
+      </div>
+      {hasRatingRow && <div className="media-card-rating-row mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        {model.scoreText != null && <span className="flex items-center gap-1 text-xs text-yellow-300">
           <svg className="w-3 h-3 text-yellow-400 fill-current" viewBox="0 0 24 24" aria-hidden="true">
             <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
           </svg><span className="font-medium">{model.scoreText}</span></span>}
-        {model.ratingId && <span id={model.ratingId} data-react-owned="">{(() => {
-          const rating = live?.rating !== undefined && live ? (live.rating || null) : model.rating;
-          const cardRating = live ? { ...rating, rateUrl: rating?.rateUrl || model.rating?.rateUrl } : rating;
-          return cardRating && <CardRating rating={cardRating} csrfToken={model.csrfToken} editable={model.ratingEditable} />;
-        })()}</span>}
-      </div>
+        {model.ratingId && cardRating && <span id={model.ratingId} data-react-owned="">
+          <CardRating rating={cardRating} csrfToken={model.csrfToken} editable={model.ratingEditable} />
+        </span>}
+      </div>}
       {model.lines.map((line, index) => <Line key={index} line={line} />)}
     </div>
   </>;
