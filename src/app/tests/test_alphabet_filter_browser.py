@@ -113,9 +113,35 @@ class AlphabetBrowserTests(SerialStaticLiveServerTestCase):
                 after = page.locator(".media-grid").bounding_box()
                 for dimension in before:
                     self.assertAlmostEqual(before[dimension], after[dimension], delta=1)
+                # The mounted rail follows the first poster, which can sit a
+                # few pixels below the grid box. Do not compare it with the
+                # grid's outer edge: that is only the fallback position.
+                expected_rail_top = page.locator(".media-grid").evaluate(
+                    """grid => {
+                      const poster = grid.querySelector('img')?.getBoundingClientRect();
+                      const anchor = poster?.width && poster?.height
+                        ? poster.top : grid.getBoundingClientRect().top;
+                      return Math.max(96, Math.ceil(anchor));
+                    }"""
+                )
+                # Mounting and poster layout can settle in separate frames.
+                # Wait for the rail's live position observer rather than
+                # comparing against the CSS fallback before it has run.
+                page.wait_for_function(
+                    """() => {
+                      const rail = document.querySelector('.alphabet-rail');
+                      const grid = document.querySelector('.media-grid');
+                      if (!rail || !grid) return false;
+                      const poster = grid.querySelector('img')?.getBoundingClientRect();
+                      const anchor = poster?.width && poster?.height
+                        ? poster.top : grid.getBoundingClientRect().top;
+                      return Math.abs(rail.getBoundingClientRect().top
+                        - Math.max(96, Math.ceil(anchor))) <= 1;
+                    }"""
+                )
                 self.assertAlmostEqual(
                     page.locator(".alphabet-rail").bounding_box()["y"],
-                    after["y"],
+                    expected_rail_top,
                     delta=1,
                 )
                 rail_bounds = page.locator(".alphabet-rail").bounding_box()
@@ -138,6 +164,46 @@ class AlphabetBrowserTests(SerialStaticLiveServerTestCase):
                     page.screenshot(
                         path=str(Path(screenshots) / f"{theme}-{scheme}-react.png")
                     )
+
+            # Card hydration can replace the first poster without resizing the
+            # grid. Verify that the rail follows such a change and recovers.
+            grid_before_probe = page.locator(".media-grid").bounding_box()
+            probe_top = page.evaluate(
+                """() => {
+                  const grid = document.querySelector('.media-grid');
+                  const poster = grid.querySelector('img').getBoundingClientRect();
+                  const top = Math.ceil(poster.top) + 7;
+                  const probe = document.createElement('img');
+                  probe.dataset.alphabetAnchorProbe = 'true';
+                  probe.alt = '';
+                  probe.style.cssText = `position: fixed; top: ${top}px; left: 0; width: 1px; height: 1px;`;
+                  grid.prepend(probe);
+                  return top;
+                }"""
+            )
+            page.wait_for_function(
+                "top => Math.abs(document.querySelector('.alphabet-rail').getBoundingClientRect().top - top) <= 1",
+                arg=probe_top,
+            )
+            grid_after_probe = page.locator(".media-grid").bounding_box()
+            for dimension in grid_before_probe:
+                self.assertAlmostEqual(
+                    grid_before_probe[dimension], grid_after_probe[dimension], delta=1
+                )
+            page.locator('[data-alphabet-anchor-probe="true"]').evaluate(
+                "probe => probe.remove()"
+            )
+            page.wait_for_function(
+                """() => {
+                  const rail = document.querySelector('.alphabet-rail');
+                  const grid = document.querySelector('.media-grid');
+                  const poster = grid.querySelector('img')?.getBoundingClientRect();
+                  const anchor = poster?.width && poster?.height
+                    ? poster.top : grid.getBoundingClientRect().top;
+                  return Math.abs(rail.getBoundingClientRect().top
+                    - Math.max(96, Math.ceil(anchor))) <= 1;
+                }"""
+            )
 
             # Check visible glyph ink, not its full-width Unicode advance box.
             glyph = Image.open(
@@ -277,7 +343,15 @@ class AlphabetBrowserTests(SerialStaticLiveServerTestCase):
             for height in (600, 480, 360):
                 page.set_viewport_size({"width": 1024, "height": height})
                 page.wait_for_function(
-                    "Math.abs(document.querySelector('.alphabet-rail').getBoundingClientRect().top - Math.max(96, Math.round(document.querySelector('.media-grid').getBoundingClientRect().top))) <= 1"
+                    """() => {
+                      const grid = document.querySelector('.media-grid');
+                      const poster = grid.querySelector('img')?.getBoundingClientRect();
+                      const anchor = poster?.width && poster?.height
+                        ? poster.top : grid.getBoundingClientRect().top;
+                      const railTop = document.querySelector('.alphabet-rail')
+                        .getBoundingClientRect().top;
+                      return Math.abs(railTop - Math.max(96, Math.ceil(anchor))) <= 1;
+                    }"""
                 )
                 rail = page.locator(".alphabet-rail")
                 self.assertEqual(rail.bounding_box()["width"], 32)
