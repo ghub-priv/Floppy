@@ -34,12 +34,18 @@ export function mountAlphabet(host, props) {
   let results, frame = 0, disposed = false;
   const textMetrics = document.createElement('canvas').getContext('2d');
   const observer = new ResizeObserver(() => schedulePosition());
+  // React card mounting can move the first poster without resizing the grid.
+  const contentObserver = new MutationObserver(() => schedulePosition());
   function position() {
     const next = document.querySelector(props.resultsSelector);
     if (next !== results) {
       if (results) observer.unobserve(results);
+      contentObserver.disconnect();
       results = next;
-      if (results) observer.observe(results);
+      if (results) {
+        observer.observe(results);
+        contentObserver.observe(results, { childList: true, subtree: true });
+      }
     }
     if (!results) return;
     const poster = results.querySelector('img')?.getBoundingClientRect();
@@ -85,6 +91,7 @@ export function mountAlphabet(host, props) {
     disposed = true;
     cancelAnimationFrame(frame);
     observer.disconnect();
+    contentObserver.disconnect();
     window.removeEventListener('resize', schedulePosition);
     document.removeEventListener('scroll', schedulePosition, true);
     document.removeEventListener('htmx:afterSettle', schedulePosition);
